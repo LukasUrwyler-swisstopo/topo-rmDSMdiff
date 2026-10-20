@@ -14,8 +14,9 @@ definiert werden. Wer ein Volumen braucht, rechnet es mit DSM, Diff und dem eige
 ## GUI starten
 
 ```bash
-python GUI_DSMdiff.py
+cmd> python GUI_DSMdiff.py
 ```
+<img width="955" height="964" alt="image" src="https://github.com/user-attachments/assets/9e19aa6c-552a-4cfa-86ba-f417a5f5f08f" />
 
 Das GUI läuft im Standard-Python (nur `tkinter`). Beim ersten Start sucht es die
 OSGeo4W/QGIS-Installation selbst; „Ändern…“ setzt den Pfad von Hand. OSGeo4W-Python,
