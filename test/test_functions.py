@@ -1387,6 +1387,40 @@ def test_gui_vorbelegung_aus_stac_und_aus_diff():
         app.destroy()
 
 
+def test_gui_kacheln_button():
+    g = _gui()
+    app = g.DSMDiffApp()
+    try:
+        btn, s = app.s3d_search_btn, g.ttk.Style(app)
+        app.neu_var.set(DSM_HREF)
+        app.jahr_var.set("2026")
+        app._refresh_preview()
+        assert btn.cget("text") == "Kacheln suchen" and str(btn.cget("style")) == "Amber.TButton"
+        assert not btn.instate(["disabled"])
+        assert s.lookup("Amber.TButton", "foreground") == g.DARK["hint"]
+        assert s.lookup("Amber.TButton", "foreground", ["disabled"]) == g.DARK["fg_dim"]
+        app._s3d_result, app._s3d_key = {"years": [2024]}, app._s3d_key_now()
+        app._preview_sig = None
+        app._refresh_preview()
+        assert btn.cget("text") == "Kacheln geladen" and str(btn.cget("style")) == "Ok.TButton"
+        assert s.lookup("Ok.TButton", "foreground") == g.DARK["ok"]
+        app.alt_mode_var.set(g.ALT_FILE)
+        app._on_alt_change()
+        assert btn.instate(["disabled"])
+        app._enable_s3d_btn()                 # Suche endet, waehrend Eigenes DSM gewaehlt ist
+        assert btn.instate(["disabled"])
+        app.alt_mode_var.set(g.ALT_S3D)
+        app._on_alt_change()
+        assert not btn.instate(["disabled"]) and btn.cget("text") == "Kacheln geladen"
+        app.jahr_var.set("2025")              # andere Eingabe -> Ergebnis verfaellt
+        app._refresh_preview()
+        assert app._s3d_result is None and btn.cget("text") == "Kacheln suchen"
+        app._apply_theme(False)
+        assert s.lookup("Amber.TButton", "foreground") == g.LIGHT["hint"]
+    finally:
+        app.destroy()
+
+
 def test_gui_sanduhr_und_phase():
     g = _gui()
     app = g.DSMDiffApp()

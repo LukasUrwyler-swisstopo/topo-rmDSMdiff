@@ -620,7 +620,7 @@ class DSMDiffApp(tk.Tk):
 
     def _build_neu(self, parent):
         sec = self._section(parent, "DSM aktuell")
-        self._key(sec, "Datei oder STAC-Link:", 0)
+        self._key(sec, "Lokales DSM (Pfad) oder STAC-Link:", 0)
         self.neu_var = tk.StringVar()
         self._path_row(sec, 0, self.neu_var, "Datei…", self._browse_neu)
         entry = sec.grid_slaves(row=0, column=1)[0]
@@ -651,7 +651,7 @@ class DSMDiffApp(tk.Tk):
         self.s3d_rule_lbl.grid(row=0, column=1, sticky="w", padx=(8, 0))
         self._accent_labels.append(self.s3d_rule_lbl)
         self.s3d_search_btn = ttk.Button(self._s3d_frame, text="Kacheln suchen",
-                                         command=self._search_tiles)
+                                         style="Amber.TButton", command=self._search_tiles)
         self.s3d_search_btn.grid(row=2, column=0, sticky="nw", pady=(6, 0))
         self.s3d_result_lbl = ttk.Label(self._s3d_frame, text="(noch nicht gesucht – der Lauf "
                                                               "sucht ohnehin selbst)",
@@ -672,7 +672,7 @@ class DSMDiffApp(tk.Tk):
         self._file_frame = ttk.Frame(sec)
         self._file_frame.grid(row=3, column=0, columnspan=3, sticky="ew", padx=(22, 0), pady=(2, 0))
         self._file_frame.columnconfigure(1, weight=1)
-        self._key(self._file_frame, "Datei oder STAC-Link:", 0)
+        self._key(self._file_frame, "Lokales DSM (Pfad) oder STAC-Link:", 0)
         self.alt_var = tk.StringVar()
         self._path_row(self._file_frame, 0, self.alt_var, "Datei…", self._browse_alt)
         entry = self._file_frame.grid_slaves(row=0, column=1)[0]
@@ -962,7 +962,8 @@ class DSMDiffApp(tk.Tk):
             return                          # nur Fokuswechsel, nichts geaendert
         self._last_neu_path = path
         self._neu_gsd_m = None
-        self._s3d_result = None
+        # Ein altes Suchergebnis verfaellt in _refresh_preview (Schluessel enthaelt den Pfad),
+        # dort werden auch Ergebniszeile und Button zurueckgesetzt
         if stac_import.is_url(path):
             # Vorbelegung kommt mit der Info aus den STAC-Metadaten (_apply_stac_neu). Ein
             # Ordner fuer die Ausgabe laesst sich aus einem Link nicht ableiten.
@@ -1124,6 +1125,7 @@ class DSMDiffApp(tk.Tk):
         if self._s3d_result is not None and self._s3d_key != self._s3d_key_now():
             self._s3d_result = None
             self.s3d_result_lbl.configure(text="(Eingaben geändert – neu suchen oder Lauf starten)")
+        self._update_s3d_btn()
 
     def _open_link(self):
         link = self._preview["link"].cget("text")
@@ -1288,21 +1290,35 @@ class DSMDiffApp(tk.Tk):
                  if is_link else "⏳ suche im STAC …")
 
         def ok(res):
-            self.s3d_search_btn.state(["!disabled"])
+            self._enable_s3d_btn()
             self._s3d_result, self._s3d_key = res, key
             self._preview_sig = None
             self.s3d_result_lbl.configure(text=self._format_s3d(res))
+            self._update_s3d_btn()
 
         def err(msg):
-            self.s3d_search_btn.state(["!disabled"])
+            self._enable_s3d_btn()
             self._s3d_result = None
             self.s3d_result_lbl.configure(text="Suche fehlgeschlagen (Details im Log)")
+            self._update_s3d_btn()
             self._log(f"Kacheln suchen: {msg}\n")
 
         self._fetch_json_async({"action": "s3d_search", "dsm_neu": neu, "ref_year": year,
                                 "secrets_dir": self.secrets_var.get().strip(),
                                 "staging_dir": self._staging_dir},
                                ok, err, log_stderr=True)
+
+    def _enable_s3d_btn(self):
+        """Nach der Suche wieder aktiv - aber nur, wenn swissSURFACE3D noch gewaehlt ist."""
+        if self.alt_mode_var.get() == ALT_S3D:
+            self.s3d_search_btn.state(["!disabled"])
+
+    def _update_s3d_btn(self):
+        """'Kacheln suchen' amber, nach erfolgreicher Suche 'Kacheln geladen' gruen (gilt fuer
+        die aktuellen Eingaben). Grau, solange deaktiviert (Eigenes DSM, Suche laeuft)."""
+        found = self._s3d_result is not None and self._s3d_key == self._s3d_key_now()
+        self.s3d_search_btn.configure(text="Kacheln geladen" if found else "Kacheln suchen",
+                                      style="Ok.TButton" if found else "Amber.TButton")
 
     @staticmethod
     def _format_s3d(res):
@@ -1792,6 +1808,11 @@ class DSMDiffApp(tk.Tk):
               foreground=[("active", T["fg"]), ("disabled", T["fg_dim"])],
               relief=[("pressed", "flat")])
         s.configure("Small.TButton", padding=(6, 0), font=("", 8))
+        # 'Kacheln suchen': Textfarbe amber/gruen wie der Start-Button. Eigene map, sonst gilt
+        # die configure-Farbe auch im Zustand disabled (statt grau)
+        for style, key in (("Amber.TButton", "hint"), ("Ok.TButton", "ok")):
+            s.configure(style, foreground=T[key])
+            s.map(style, foreground=[("disabled", T["fg_dim"]), ("active", T[key])])
         # Indikator (Kreis/Kaestchen) sonst immer weiss, auch im Darkmode
         for style in ("TRadiobutton", "TCheckbutton"):
             s.configure(style, background=T["panel"], foreground=T["fg"], focuscolor=T["panel"],
