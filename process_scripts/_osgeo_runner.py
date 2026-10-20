@@ -160,11 +160,19 @@ def _s3d_search(cfg):
     print(json.dumps(result, ensure_ascii=False), flush=True)
 
 
-def _tm2(meta, alt_quelle, years):
+def _terrain_models(meta, line_ids, camera, alt_quelle, s3d_years, neu_link=None, alt_link=None):
+    """TerrainModel 1/2 der Asset-Beschreibung. Jahr TerrainModel 1 = Jahr der ersten LineID,
+    ein STAC-Link wird mit seinem Asset-Namen genannt (stac_import.terrain_model_label)."""
     import stac_import
+    year = stac_import.acquisition_times(line_ids, camera)[0][:4]
+    tm1 = stac_import.terrain_model_label(meta.get("tm1") or stac_import.TERRAIN_MODEL_1_DEFAULT,
+                                          [year], neu_link)
     if alt_quelle == "swisssurface3d":
-        return stac_import.terrain_model_2(stac_import.TERRAIN_MODEL_S3D, years)
-    return stac_import.terrain_model_2(meta.get("tm2") or "", [meta.get("tm2_year") or ""])
+        tm2 = stac_import.terrain_model_label(stac_import.TERRAIN_MODEL_S3D, s3d_years)
+    else:
+        tm2 = stac_import.terrain_model_label(meta.get("tm2"), [meta.get("tm2_year") or ""],
+                                              alt_link)
+    return [tm1, tm2]
 
 
 def _dsm_diff(cfg):
@@ -232,12 +240,15 @@ def _dsm_diff(cfg):
         state["check"] = stac_import.check_item(session, env, item, line_ids, camera, area,
                                                 None, bool(stac.get("replace_existing")))
 
+    neu_link = cfg["dsm_neu"] if stac_import.is_url(cfg["dsm_neu"]) else None
+    alt_link = (cfg.get("dsm_alt") if alt_quelle == dsm_diff.ALT_FILE
+                and stac_import.is_url(cfg.get("dsm_alt")) else None)
+
     def pre_check(info):
         years = info["s3d"]["years"] if info.get("s3d") else []
         if import_on:
             state["description"] = stac_import.build_description(
-                area, [meta.get("tm1") or stac_import.TERRAIN_MODEL_1_DEFAULT,
-                       _tm2(meta, alt_quelle, years)],
+                area, _terrain_models(meta, line_ids, camera, alt_quelle, years, neu_link, alt_link),
                 camera, line_ids, meta.get("commentary") or stac_import.DEFAULT_COMMENTARY)
             logger.info(f"Asset-Beschreibung: {state['description']}")
             stac_import.check_gsd(state["check"], info["neu"]["res_x"])
@@ -318,9 +329,12 @@ def _stac_import(cfg):
         years = [y for y in md.get("DSMDIFF_SOURCE_OLD_YEARS", "").split(",") if y]
     else:
         alt_quelle, years = "datei", []
+    # Links der Eingaben aus den DIFF-Metadaten (DSMDIFF_SOURCE_OLD ist bei einem Link der Link)
+    old = md.get("DSMDIFF_SOURCE_OLD")
     description = stac_import.build_description(
-        area, [meta.get("tm1") or stac_import.TERRAIN_MODEL_1_DEFAULT,
-               _tm2(meta, alt_quelle, years)],
+        area, _terrain_models(meta, line_ids, camera, alt_quelle, years,
+                              md.get("DSMDIFF_SOURCE_NEW_HREF") or None,
+                              old if alt_quelle == "datei" and stac_import.is_url(old) else None),
         camera, line_ids, meta.get("commentary") or stac_import.DEFAULT_COMMENTARY)
     logger.info(f"=== STAC-Import (vorhandenes DIFF) ===\nDIFF: {path}  (GSD {gsd:g} m)")
     res = stac_import.run_stac_import(

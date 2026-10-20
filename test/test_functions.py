@@ -89,22 +89,44 @@ def test_beschreibung_baut_echtes_dsm_raster_asset_nach():
 
 
 def test_beschreibung_diff_mit_zwei_terrainmodellen():
-    tm2 = stac_import.terrain_model_2("swissSURFACE3D", [2023, "2021", 2023])
-    assert tm2 == "swissSURFACE3D (2021, 2023)"
+    label = stac_import.terrain_model_label
+    tm1 = label(stac_import.TERRAIN_MODEL_1_DEFAULT, [2026])
+    tm2 = label("swissSURFACE3D", [2023, "2021", 2023])
+    assert tm1 == "2026-DSM-photogrammetric"
+    assert tm2 == "2021/2023-swissSURFACE3D-DSM"
     desc = stac_import.build_description(
-        "GUPPENFIRN", [stac_import.TERRAIN_MODEL_1_DEFAULT, tm2], DMC, [L003, L004],
+        "GUPPENFIRN", [tm1, label("swissSURFACE3D", [2025])], DMC, [L003, L004],
         stac_import.DEFAULT_COMMENTARY)
     assert desc == (
-        "Area: GUPPENFIRN, TerrainModel 1: Digital Surface Model (DSM photogrammetric "
-        "autocorrelation), TerrainModel 2: swissSURFACE3D (2021, 2023), SourceReferenceSystem: "
+        "Area: GUPPENFIRN, TerrainModel 1: 2026-DSM-photogrammetric, TerrainModel 2: "
+        "2025-swissSURFACE3D-DSM, SourceReferenceSystem: "
         "(EPSG:2056) CH1903+ / LV95_LN02, CameraSystem: Leica DMC-4, Acquisition time: "
         "2026-08-13T08:22:21.00,2026-08-13T08:27:50.00, LineId: "
         "20260813_0822_41216_003_082221,20260813_0822_41216_004_082750, Commentary: Digital "
         "Surface Model - Difference (TerrainModel 1 minus TerrainModel 2, negative = loss)")
     assert stac_import.area_from_description(desc) == "GUPPENFIRN"
-    assert stac_import.terrain_model_2("swissALTI3D", [""]) == "swissALTI3D"
+    assert label("swissALTI3D", [""]) == "swissALTI3D"
+    assert label("swissALTI3D", ["2019"]) == "2019-swissALTI3D"
+    assert label("", ["2019"]) == ""
     with pytest.raises(ValueError):
         stac_import.build_description("", ["x"], DMC, [L003], "c")
+
+
+def test_beschreibung_terrainmodell_als_stac_link():
+    href = ("https://sys-data.int.bgdi.ch/ch.swisstopo.spezialbefliegungen/kry-2026-08-13t08222100/"
+            "kry-2026-08-13t08222100-dsm-raster.tif")
+    api = ("https://sys-data.int.bgdi.ch/api/stac/v0.9/collections/ch.swisstopo.spezialbefliegungen"
+           "/items/kry-2026-08-13t08222100/assets/kry-2026-08-13t08222100-dsm-raster.tif")
+    # Daten-href und API-URL: in der Beschreibung steht nur der Asset-Name
+    for link in (href, api):
+        tm = stac_import.terrain_model_label(stac_import.TERRAIN_MODEL_1_DEFAULT, [2026], link)
+        assert tm == "2026-DSM-photogrammetric (kry-2026-08-13t08222100-dsm-raster.tif)"
+    desc = stac_import.build_description("GUPPENFIRN", [tm, "2025-DSM-photogrammetric"], DMC,
+                                         [L003], "c")
+    f = stac_import.description_fields(desc)
+    assert f["TerrainModel 1"] == tm and f["TerrainModel 2"] == "2025-DSM-photogrammetric"
+    with pytest.raises(ValueError):
+        stac_import.terrain_model_label("x", [2026], "https://example.com/a/b/c.tif")
 
 
 def test_beschreibung_ads_zeiten():
@@ -1238,6 +1260,9 @@ def test_runner_import_scheitert_diff_bleibt(tmp_path, monkeypatch):
     assert out.exists()
     assert seen["bounds_lv95"] == (2600000.0, 1200000.0, 2600150.0, 1200100.0)
     assert seen["args"][2] == ITEM
+    # Beschreibung: lokale Eingaben ohne Pfad, Jahr TerrainModel 1 aus der ersten LineID
+    assert ("TerrainModel 1: 2026-DSM-photogrammetric, TerrainModel 2: 2019-swissALTI3D, "
+            in seen["args"][3])
     _no_item_writes(sess404)                 # die Vorpruefung selbst schreibt nichts
 
     # datetime eines vorhandenen Items passt nicht -> Abbruch VOR der Rechnung
@@ -1302,7 +1327,8 @@ def test_gui_vorbelegung_vorschau_und_defaults(tmp_path):
         assert txt["asset"] == "kry-2026-08-13t08222100-dsm-diff.tif"
         assert txt["title"] == "DSM-DIFF"
         assert txt["link"].startswith("https://sys-data.int.bgdi.ch/")
-        assert "TerrainModel 2: swissSURFACE3D" in txt["desc"]
+        assert "TerrainModel 1: 2026-DSM-photogrammetric, TerrainModel 2: <Jahr nach" in txt["desc"]
+        assert "-swissSURFACE3D-DSM, " in txt["desc"]
         app.env_var.set("PROD")
         app._refresh_preview()
         assert app._preview["link"].cget("text").startswith("https://data.geo.admin.ch/")
@@ -1315,7 +1341,20 @@ def test_gui_vorbelegung_vorschau_und_defaults(tmp_path):
         app.tm2_var.set("swissALTI3D")
         app.tm2_year_var.set("2019")
         app._refresh_preview()
-        assert "TerrainModel 2: swissALTI3D (2019)" in app._preview["desc"].cget("text")
+        assert "TerrainModel 2: 2019-swissALTI3D, " in app._preview["desc"].cget("text")
+        # STAC-Links: der Asset-Name steht in Klammern, ein lokaler Pfad nie
+        app.neu_var.set(DSM_HREF)
+        app.alt_var.set(DSM_HREF.replace("2026-08-13t08222100", "2025-08-20t10000000"))
+        app.tm2_var.set(g.stac_import.TERRAIN_MODEL_1_DEFAULT)
+        app.tm2_year_var.set("2025")
+        app._refresh_preview()
+        desc = app._preview["desc"].cget("text")
+        assert (f"TerrainModel 1: 2026-DSM-photogrammetric ({ITEM}-dsm-raster.tif), "
+                "TerrainModel 2: 2025-DSM-photogrammetric "
+                "(kry-2025-08-20t10000000-dsm-raster.tif), ") in desc
+        app.tm2_year_var.set("")
+        app.stac_var.set(True)
+        assert any("TerrainModel 2: Jahr" in e for e in app._validate())
     finally:
         app.destroy()
 
@@ -1364,8 +1403,10 @@ def test_gui_vorbelegung_aus_stac_und_aus_diff():
             stac_import.parse_asset_href(DSM_HREF),
             {"href": DSM_HREF, "eo:gsd": 0.5, "description": REAL_DSM_RASTER_DESCRIPTION})
         app.camera_var.set("Leica ADS100")
+        assert summary["auftragstyp"] == "kry"
         app._apply_stac_neu(summary)
-        assert app._auftragstyp() == "kry" and app.area_var.get() == "GUPPENFIRN"
+        # Auftragstyp bleibt 'ram', auch wenn DSM aktuell aus einem kry-Item stammt
+        assert app._auftragstyp() == "ram" and app.area_var.get() == "GUPPENFIRN"
         assert app.camera_var.get() == "Leica DMC-4" and app.jahr_var.get() == "2026"
         assert app.lineid_w.get_ids() == [L003, L004]
         assert app._suggested_out_name() == "2026_GUPPENFIRN_DSM-DIFF_50cm_LV95.tif"

@@ -58,6 +58,9 @@ DEFAULT_CAMERA = _line_ids.DMC_CAMERA
 SOURCE_REF_SYS = "(EPSG:2056) CH1903+ / LV95_LN02"
 TERRAIN_MODEL_1_DEFAULT = TERRAIN_MODELS[0]
 TERRAIN_MODEL_S3D = "swissSURFACE3D"
+# Kurznamen in der DIFF-Beschreibung, '<JAHR>-<Kurzname>' (Entscheid Nutzer 2026-10-20)
+TERRAIN_MODEL_SHORT = {TERRAIN_MODEL_1_DEFAULT: "DSM-photogrammetric",
+                       TERRAIN_MODEL_S3D: "swissSURFACE3D-DSM"}
 DEFAULT_COMMENTARY = ("Digital Surface Model - Difference "
                       "(TerrainModel 1 minus TerrainModel 2, negative = loss)")
 
@@ -135,10 +138,18 @@ def acquisition_times(line_ids, camera):
     return [f"{l[0:4]}-{l[4:6]}-{l[6:8]}T{l[9:11]}:{l[11:13]}:00.00" for l in ids]
 
 
-def terrain_model_2(base, years=None):
-    """TerrainModel 2 mit Jahr(en), z.B. 'swissSURFACE3D (2021, 2023)'."""
+def terrain_model_label(model, years=None, link=None):
+    """TerrainModel 1/2 der DIFF-Beschreibung: '<JAHR>-<Kurzname>', mehrere Jahre mit '/',
+    ein STAC-Link mit seinem Asset-Namen (Entscheid Nutzer: reicht zum Nachvollziehen); ein
+    lokaler Pfad wird nicht genannt. Z.B. '2021/2023-swissSURFACE3D-DSM',
+    '2026-DSM-photogrammetric (kry-2026-08-13t08222100-dsm-raster.tif)'."""
+    model = str(model or "").strip()
+    if not model:
+        return ""
+    name = TERRAIN_MODEL_SHORT.get(model, model)
     ys = sorted({str(y).strip() for y in (years or []) if str(y).strip()})
-    return f"{base} ({', '.join(ys)})" if ys else base
+    label = f"{'/'.join(ys)}-{name}" if ys else name
+    return f"{label} ({parse_asset_href(link)['asset']})" if link else label
 
 
 def build_description(area, terrain_models, camera, line_ids, commentary,
@@ -217,6 +228,7 @@ def parse_asset_href(url):
         raise ValueError(f"STAC-Asset {asset}: GeoTIFF/COG (.tif) erwartet")
     return {"env": env, "host": host, "collection": m.group("collection"),
             "item": m.group("item"), "asset": asset, "url": url}
+
 
 
 def description_fields(description):

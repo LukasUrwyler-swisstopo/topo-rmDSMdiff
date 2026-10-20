@@ -31,6 +31,9 @@ Fachlicher Hintergrund, Ablauf und Konventionen: `README.md` im Projektordner.
   (Logik `_line_ids.stac_datetime`), Asset `<item>-dsm-diff.tif` klein, Titel `DSM-DIFF`.
 - Beschreibung als Text in einer Funktion (`stac_import.build_description`), Muster der GDWH-Assets,
   Schlüssel `TerrainModel 1` / `TerrainModel 2`. Test gegen das echte DSM-RASTER-Asset.
+  Werte (Entscheid Nutzer, `stac_import.terrain_model_label`): `<JAHR>-<Name>`, z.B.
+  `2026-DSM-photogrammetric`, `2025-swissSURFACE3D-DSM` (Jahre der Kacheln mit `/`); bei einem
+  STAC-Link zusätzlich der Asset-Name in Klammern (nicht der ganze href), lokale Pfade nie.
 - **INT ist immer Default.** PROD nie aus Versehen, im GUI nur nach Bestätigungsdialog.
 - **Ein bestehendes Item nie schreiben** (kein PUT/PATCH auf `/items/<id>`), dort nur Asset-PUT +
   Multipart-Upload. `publish_to_stac` aus rapidmapping nicht verwenden.
@@ -50,8 +53,10 @@ Fachlicher Hintergrund, Ablauf und Konventionen: `README.md` im Projektordner.
 - DSM aktuell / DSM alt: lokaler Pfad (GeoTIFF/COG + TFW) **oder STAC-Link** (href bzw. API-URL eines
   Assets auf INT/PROD). Ein Link wird ins Staging geladen (`<staging>/stac_asset_cache/`, Prüfsumme
   gegen `checksum:multihash`), nicht per `/vsicurl/` gestreamt (Proxy/Kerberos).
-- Bei einem Link belegt das GUI aus den STAC-Metadaten vor: Auftragstyp (Item-ID), Area,
-  CameraSystem, LineIDs, Jahr (DSM aktuell) bzw. TerrainModel 2 + Jahr (DSM alt).
+- Bei einem Link belegt das GUI aus den STAC-Metadaten vor: Area, CameraSystem, LineIDs, Jahr
+  (DSM aktuell) bzw. TerrainModel 2 + Jahr (DSM alt). Den Auftragstyp ändern die DSM-Eingaben nie
+  (Entscheid Nutzer: bleibt `ram`, auch bei einem `kry`-Item); nur „Nur STAC-Import“ übernimmt ihn
+  aus den `DSMDIFF_*`-Metadaten des DIFF.
 - swissSURFACE3D: Jahr je Kachel = jüngstes **vor** dem Aufnahmejahr, feste Regel (die Option
   „gleiches Jahr“ hat der Nutzer gestrichen; die Kernfunktion kennt `allow_same_year` nur noch für Tests).
 

@@ -632,8 +632,8 @@ class DSMDiffApp(tk.Tk):
         self._hint(sec, "Lokal (GeoTIFF/COG + TFW): Name <JAHR>_<AREA>_DSM_<GSD>cm_LV95_<LN02|LHN95>.tif "
                         "belegt Jahr, Area und Ausgabenamen vor.\n"
                         "STAC-Link (href eines Assets auf data.geo.admin.ch / sys-data.int.bgdi.ch): "
-                        "Auftragstyp, Area, CameraSystem, LineIDs und Jahr kommen aus den STAC-\n"
-                        "Metadaten; die Datei wird beim Lauf ins Staging geladen (Prüfsumme).", 3)
+                        "Area, CameraSystem, LineIDs und Jahr kommen aus den STAC-Metadaten\n"
+                        "(Auftragstyp bleibt); die Datei wird beim Lauf ins Staging geladen (Prüfsumme).", 3)
 
     def _build_alt(self, parent):
         sec = self._section(parent, "DSM alt (Referenz)")
@@ -722,8 +722,9 @@ class DSMDiffApp(tk.Tk):
         self._key(sec, "TerrainModel 2:", r)
         tm2 = ttk.Frame(sec)
         tm2.grid(row=r, column=1, columnspan=2, sticky="w", padx=(8, 0), pady=3)
-        self.tm2_s3d_lbl = ttk.Label(tm2, text=f"{stac_import.TERRAIN_MODEL_S3D}  (+ Jahre der Kacheln)",
-                                     font=("", 9, "bold"))
+        self.tm2_s3d_lbl = ttk.Label(
+            tm2, text=f"<JAHR>-{stac_import.TERRAIN_MODEL_SHORT[stac_import.TERRAIN_MODEL_S3D]}"
+                      f"  (JAHR = Jahr der Kacheln)", font=("", 9, "bold"))
         self._accent_labels.append(self.tm2_s3d_lbl)
         self._tm2_file_frame = ttk.Frame(tm2)
         self.tm2_var = tk.StringVar(value=stac_import.TERRAIN_MODELS[0])
@@ -989,13 +990,10 @@ class DSMDiffApp(tk.Tk):
                            on_stac=self._apply_stac_alt)
 
     def _apply_stac_neu(self, st):
-        """Felder aus den STAC-Metadaten von DSM aktuell vorbelegen (alles editierbar)."""
+        """Felder aus den STAC-Metadaten von DSM aktuell vorbelegen (alles editierbar).
+        Der Auftragstyp bleibt (Entscheid Nutzer): ein DIFF ist 'ram', auch wenn das DSM
+        aus einem 'kry'-Item stammt."""
         filled = []
-        code = st.get("auftragstyp")
-        if code:
-            self.auftragstyp_var.set(next(l for l in AUFTRAGSTYP_LABELS
-                                          if l.split(" - ", 1)[0] == code))
-            filled.append(f"Auftragstyp {code}")
         if st.get("area"):
             self.area_var.set(st["area"])
             filled.append(f"Area {st['area']}")
@@ -1020,8 +1018,9 @@ class DSMDiffApp(tk.Tk):
             self._log(f"Vorbelegt aus STAC ({st.get('asset')}): {', '.join(filled)}\n")
 
     def _apply_stac_alt(self, st):
-        """TerrainModel 2 und dessen Jahr aus den STAC-Metadaten von DSM alt."""
-        if st.get("terrain_model"):
+        """TerrainModel 2 und dessen Jahr aus den STAC-Metadaten von DSM alt (nur ein Wert der
+        Auswahlliste, z.B. nicht das '<JAHR>-...' aus der Beschreibung eines DIFF)."""
+        if st.get("terrain_model") in stac_import.TERRAIN_MODELS:
             self.tm2_var.set(st["terrain_model"])
         if st.get("year"):
             self.tm2_year_var.set(str(st["year"]))
@@ -1069,13 +1068,21 @@ class DSMDiffApp(tk.Tk):
         year, _ = self._acq_year()
         return (self.neu_var.get().strip().strip('"'), year)
 
-    def _tm2_preview(self):
+    def _tm_preview(self):
+        """TerrainModel 1/2 wie im Lauf (_osgeo_runner._terrain_models): '<JAHR>-<Kurzname>',
+        bei einem STAC-Link mit dessen Asset-Namen."""
+        neu = self.neu_var.get().strip().strip('"')
+        tm1 = stac_import.terrain_model_label(self.tm1_var.get(), [self._acq_year()[0] or "<JAHR>"],
+                                              neu if stac_import.is_url(neu) else None)
         if self.alt_mode_var.get() == ALT_S3D:
             if self._s3d_result and self._s3d_key == self._s3d_key_now():
-                return stac_import.terrain_model_2(stac_import.TERRAIN_MODEL_S3D,
-                                                   self._s3d_result.get("years"))
-            return f"{stac_import.TERRAIN_MODEL_S3D} (<Jahre nach 'Kacheln suchen' bzw. aus dem Lauf>)"
-        return stac_import.terrain_model_2(self.tm2_var.get(), [self.tm2_year_var.get()])
+                years = self._s3d_result.get("years")
+            else:
+                years = ["<Jahr nach 'Kacheln suchen' bzw. aus dem Lauf>"]
+            return [tm1, stac_import.terrain_model_label(stac_import.TERRAIN_MODEL_S3D, years)]
+        alt = self.alt_var.get().strip().strip('"')
+        return [tm1, stac_import.terrain_model_label(self.tm2_var.get(), [self.tm2_year_var.get()],
+                                                     alt if stac_import.is_url(alt) else None)]
 
     # ── Vorschau (laufend ueber den Poll-Zyklus, deckt auch die LineID-Liste ab) ─
     def _preview_values(self):
@@ -1093,8 +1100,7 @@ class DSMDiffApp(tk.Tk):
             pass
         try:
             desc = stac_import.build_description(
-                self.area_var.get().strip() or "<AREA>",
-                [self.tm1_var.get(), self._tm2_preview()], cam, ids,
+                self.area_var.get().strip() or "<AREA>", self._tm_preview(), cam, ids,
                 self.commentary_var.get().strip() or stac_import.DEFAULT_COMMENTARY)
         except ValueError as e:
             desc = f"({e})"
@@ -1106,7 +1112,7 @@ class DSMDiffApp(tk.Tk):
                self.auftragstyp_var.get(), self.area_var.get(), self.jahr_var.get(),
                self.tm1_var.get(), self.tm2_var.get(), self.tm2_year_var.get(),
                self.commentary_var.get(), self.alt_mode_var.get(),
-               self.out_var.get(), self.neu_var.get(), id(self._s3d_result))
+               self.out_var.get(), self.neu_var.get(), self.alt_var.get(), id(self._s3d_result))
         if sig == self._preview_sig:
             return
         self._preview_sig = sig
@@ -1360,6 +1366,9 @@ class DSMDiffApp(tk.Tk):
                 self._validate_input(errors, "DSM alt (eigenes DSM)", alt)
                 if stac_on and not self.tm2_var.get().strip():
                     errors.append("TerrainModel 2 fehlt.")
+                if stac_on and not re.fullmatch(r"(19|20)\d{2}", self.tm2_year_var.get().strip()):
+                    errors.append("TerrainModel 2: Jahr fehlt oder ungültig (steht als "
+                                  "'<JAHR>-…' in der STAC-Beschreibung).")
             elif not self._acq_year()[0]:
                 errors.append("Aufnahmejahr fehlt (LineIDs oder Feld Jahr) – es bestimmt das "
                               "swissSURFACE3D-Jahr je Kachel.")

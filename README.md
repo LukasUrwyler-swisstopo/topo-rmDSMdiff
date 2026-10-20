@@ -28,7 +28,7 @@ Umschalter „Hell“/„Dark“ oben rechts).
 | Abschnitt | Feld | Bemerkung |
 |---|---|---|
 | oben | OSGeo4W Python, Staging-Ordner, „Staging behalten“ | Staging Standard `Y:\02_DMC_tempProcessingFolder` (wie DMC-Converter) |
-| **DSM aktuell** | Lokales DSM (Pfad) **oder STAC-Link** | Lokal (GeoTIFF/COG + TFW): Info-Zeile GSD, Grösse, CRS, Höhenbezug, NoData; Name `<JAHR>_<AREA>_DSM_<GSD>cm_LV95_<LN02\|LHN95>.tif` belegt Jahr, Area und Ausgabenamen vor. STAC-Link (href eines Assets, z.B. `…/<item>-dsm-raster.tif`): Auftragstyp, Area, CameraSystem, LineIDs und Jahr aus den STAC-Metadaten |
+| **DSM aktuell** | Lokales DSM (Pfad) **oder STAC-Link** | Lokal (GeoTIFF/COG + TFW): Info-Zeile GSD, Grösse, CRS, Höhenbezug, NoData; Name `<JAHR>_<AREA>_DSM_<GSD>cm_LV95_<LN02\|LHN95>.tif` belegt Jahr, Area und Ausgabenamen vor. STAC-Link (href eines Assets, z.B. `…/<item>-dsm-raster.tif`): Area, CameraSystem, LineIDs und Jahr aus den STAC-Metadaten; der Auftragstyp bleibt (Standard `ram`, auch bei einem `kry`-Item) |
 | **DSM alt** | ● swissSURFACE3D (Standard) | Kacheln über die Ausdehnung von DSM aktuell; Jahr je Kachel aus dem STAC-Item, gewählt das jüngste **vor** dem Aufnahmejahr (feste Regel); Button „Kacheln suchen“ (amber) zeigt Kacheln, Jahre, fehlende Kacheln; danach „Kacheln geladen“ (grün), bis sich DSM aktuell oder das Aufnahmejahr ändert; grau bei Eigenem DSM |
 | | ○ Eigenes DSM (Pfad oder STAC-Link) | ein Band, gleiche Prüfungen wie DSM aktuell; Höhenbezug aus Tag, STAC-Beschreibung oder Dateiname (`_LV95_LN02`); bei einem Link werden TerrainModel 2 und Jahr vorbelegt |
 | **Meta-Informationen / STAC** | Auftragstyp (Standard `ram`), CameraSystem (Standard `Leica DMC-4`), Area, Jahr, TerrainModel 1, TerrainModel 2, SourceRefSys (fix), Commentary, LineIDs | Listen wie `topo-GDWHimport`. LineIDs per Excel-Paste, geprüft, sortiert, ohne Duplikate (`_line_ids.normalize`) |
@@ -132,9 +132,14 @@ Laufordner; die Caches bei Platzbedarf von Hand leeren.
   STAC-Asset ersetzen“.
 - Scheitert der Upload, wird ein neu angelegtes Asset wieder entfernt, ebenso ein in diesem Lauf
   angelegtes Item, sofern es danach keine Assets hat.
-- Beschreibung (Text, Reihenfolge wie die GDWH-Assets):
+- Beschreibung (Text, Reihenfolge wie die GDWH-Assets). TerrainModel 1/2 als `<JAHR>-<Name>`:
+  lokales DSM `2026-DSM-photogrammetric`, swissSURFACE3D `2025-swissSURFACE3D-DSM` (Jahr der
+  Kacheln, mehrere mit `/`, z.B. `2021/2023-…`), andere Auswahl z.B. `2019-swissALTI3D`. Bei einem
+  STAC-Link steht der Asset-Name in Klammern, z.B.
+  `2026-DSM-photogrammetric (kry-2026-08-13t08222100-dsm-raster.tif)`; ein lokaler Pfad nie.
+  Jahr TerrainModel 1 = Jahr der ersten LineID, TerrainModel 2 = Feld „Jahr“ (beim STAC-Link vorbelegt).
   ```
-  Area: GUPPENFIRN, TerrainModel 1: Digital Surface Model (DSM photogrammetric autocorrelation), TerrainModel 2: swissSURFACE3D (2021, 2023), SourceReferenceSystem: (EPSG:2056) CH1903+ / LV95_LN02, CameraSystem: Leica DMC-4, Acquisition time: 2026-08-13T08:22:21.00,2026-08-13T08:27:50.00, LineId: 20260813_0822_41216_003_082221,20260813_0822_41216_004_082750, Commentary: Digital Surface Model - Difference (TerrainModel 1 minus TerrainModel 2, negative = loss)
+  Area: GUPPENFIRN, TerrainModel 1: 2026-DSM-photogrammetric, TerrainModel 2: 2025-swissSURFACE3D-DSM, SourceReferenceSystem: (EPSG:2056) CH1903+ / LV95_LN02, CameraSystem: Leica DMC-4, Acquisition time: 2026-08-13T08:22:21.00,2026-08-13T08:27:50.00, LineId: 20260813_0822_41216_003_082221,20260813_0822_41216_004_082750, Commentary: Digital Surface Model - Difference (TerrainModel 1 minus TerrainModel 2, negative = loss)
   ```
 - Upload: Multipart wie rapidmapping, Prüfsumme sha2-256-Multihash mit hashlib, danach Kontrolle
   (`checksum:multihash` = lokal, `href` erreichbar) und Browser-Link im Log.
