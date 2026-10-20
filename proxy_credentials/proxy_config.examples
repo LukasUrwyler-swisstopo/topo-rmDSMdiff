@@ -1,0 +1,24 @@
+{
+  "_comment": "Proxy-Konfiguration - Vorlage, Aufbau wie topo-rapidmapping-int. Nach secrets\\proxy_config.json kopieren.",
+  "_instructions": [
+    "Meist genuegt es, die URL anzupassen. Nicht benoetigte Proxies auf 'enabled': false.",
+    "Reihenfolge der Verbindungssuche: direkt -> System-Proxy (Windows) -> diese Proxies.",
+    "Kerberos/Negotiate (Bundesverwaltung): braucht pyspnego im OSGeo4W-Python.",
+    "Ohne diese Datei: nur direkte Verbindung und System-Proxy."
+  ],
+  "proxies": [
+    {
+      "name": "Haupt-Proxy",
+      "url": "http://proxy.example.ch:8080",
+      "enabled": true
+    },
+    {
+      "name": "Backup-Proxy",
+      "url": "http://proxy2.example.ch:8080",
+      "enabled": false
+    }
+  ],
+  "test_url": "https://data.geo.admin.ch/browser/index.html",
+  "timeout": 5,
+  "disable_ssl_warnings": true
+}

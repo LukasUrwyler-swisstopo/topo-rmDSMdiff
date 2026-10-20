@@ -1,0 +1,22 @@
+# Zugangsdaten - NIE ins Repository (stac_credentials.json, proxy_config.json)
+secrets/
+/secrets
+*credentials*.json
+proxy_config.json
+
+# Claude Code: lokale Einstellungen nicht ins Repository, die Projektregeln schon
+.claude/*
+!.claude/CLAUDE.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Logs
+logs/
+*.log
+
+# Lokale Pfade (OSGeo4W-Python, Staging, Secrets-Ordner) je Rechner
+process_scripts/_dsmdiff_config.json
