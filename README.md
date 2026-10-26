@@ -139,8 +139,9 @@ Laufordner; die Caches bei Platzbedarf von Hand leeren.
   STAC-Link steht der Asset-Name in Klammern, z.B.
   `2026-DSM-photogrammetric (kry-2026-08-13t08222100-dsm-raster.tif)`; ein lokaler Pfad nie.
   Jahr TerrainModel 1 = Jahr der ersten LineID, TerrainModel 2 = Feld „Jahr“ (beim STAC-Link vorbelegt).
+  `Unit: metre` (Einheit der dh-Werte) steht fest im Code, ohne Feld im GUI.
   ```
-  Area: GUPPENFIRN, TerrainModel 1: 2026-DSM-photogrammetric, TerrainModel 2: 2025-swissSURFACE3D-DSM, SourceReferenceSystem: (EPSG:2056) CH1903+ / LV95_LN02, CameraSystem: Leica DMC-4, Acquisition time: 2026-08-13T08:22:21.00,2026-08-13T08:27:50.00, LineId: 20260813_0822_41216_003_082221,20260813_0822_41216_004_082750, Commentary: Digital Surface Model - Difference (TerrainModel 1 minus TerrainModel 2, negative = loss)
+  Area: GUPPENFIRN, TerrainModel 1: 2026-DSM-photogrammetric, TerrainModel 2: 2025-swissSURFACE3D-DSM, SourceReferenceSystem: (EPSG:2056) CH1903+ / LV95_LN02, Unit: metre, CameraSystem: Leica DMC-4, Acquisition time: 2026-08-13T08:22:21.00,2026-08-13T08:27:50.00, LineId: 20260813_0822_41216_003_082221,20260813_0822_41216_004_082750, Commentary: Digital Surface Model - Difference (TerrainModel 1 minus TerrainModel 2, negative = loss)
   ```
 - Upload: Multipart wie rapidmapping, Prüfsumme sha2-256-Multihash mit hashlib, danach Kontrolle
   (`checksum:multihash` = lokal, `href` erreichbar) und Browser-Link im Log.

@@ -31,6 +31,7 @@ Fachlicher Hintergrund, Ablauf und Konventionen: `README.md` im Projektordner.
   (Logik `_line_ids.stac_datetime`), Asset `<item>-dsm-diff.tif` klein, Titel `DSM-DIFF`.
 - Beschreibung als Text in einer Funktion (`stac_import.build_description`), Muster der GDWH-Assets,
   Schlüssel `TerrainModel 1` / `TerrainModel 2`. Test gegen das echte DSM-RASTER-Asset.
+  `Unit: metre` nach SourceReferenceSystem, fest im Code (`ASSET_UNIT`, kein GUI-Feld, Entscheid Nutzer).
   Werte (Entscheid Nutzer, `stac_import.terrain_model_label`): `<JAHR>-<Name>`, z.B.
   `2026-DSM-photogrammetric`, `2025-swissSURFACE3D-DSM` (Jahre der Kacheln mit `/`); bei einem
   STAC-Link zusätzlich der Asset-Name in Klammern (nicht der ganze href), lokale Pfade nie.

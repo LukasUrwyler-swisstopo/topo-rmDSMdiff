@@ -37,6 +37,7 @@ ASSET_TITLE = "DSM-DIFF"
 REF_ASSET_SUFFIX = "-dsm-raster.tif"      # DSM-RASTER desselben Items (Vergleich Area/GSD)
 ASSET_MEDIA_TYPE = "image/tiff; application=geotiff; profile=cloud-optimized"
 ASSET_EPSG = 2056
+ASSET_UNIT = "metre"                      # Einheit der dh-Werte, fest in der Beschreibung (Entscheid Nutzer 2026-10-26)
 GSD_TOLERANCE_M = 0.001
 
 # Auswahllisten wie topo-GDWHimport/GUI_GDWHimport.py (Stand 2026-10-20)
@@ -153,13 +154,14 @@ def terrain_model_label(model, years=None, link=None):
 
 
 def build_description(area, terrain_models, camera, line_ids, commentary,
-                      source_ref_sys=SOURCE_REF_SYS):
+                      source_ref_sys=SOURCE_REF_SYS, unit=ASSET_UNIT):
     """Asset-Beschreibung als Text im Muster der GDWH-Assets (kein JSON).
 
     Reihenfolge und Schreibweise wie beim DSM-RASTER-Asset. Ein Terrainmodell ergibt
     'TerrainModel: ...' (so baut der GDWH die bestehenden Assets), zwei ergeben
     'TerrainModel 1: ..., TerrainModel 2: ...' (Entscheid 3). Acquisition time und LineId
-    sortiert, kommagetrennt ohne Leerzeichen."""
+    sortiert, kommagetrennt ohne Leerzeichen. 'Unit: metre' nach SourceReferenceSystem
+    gibt es nur im DIFF (unit=None ergibt das reine GDWH-Muster)."""
     if isinstance(terrain_models, str):
         terrain_models = [terrain_models]
     if not str(area or "").strip():
@@ -172,8 +174,10 @@ def build_description(area, terrain_models, camera, line_ids, commentary,
         parts.append(f"TerrainModel: {terrain_models[0]}")
     else:
         parts += [f"TerrainModel {i}: {t}" for i, t in enumerate(terrain_models, 1)]
-    parts += [f"SourceReferenceSystem: {source_ref_sys}",
-              f"CameraSystem: {camera}",
+    parts.append(f"SourceReferenceSystem: {source_ref_sys}")
+    if unit:
+        parts.append(f"Unit: {unit}")
+    parts += [f"CameraSystem: {camera}",
               f"Acquisition time: {','.join(acquisition_times(ids, camera))}",
               f"LineId: {','.join(ids)}",
               f"Commentary: {commentary}"]
@@ -200,7 +204,7 @@ _DATA_HREF = re.compile(r"^https?://(?P<host>[^/]+)/(?P<collection>[^/]+)/(?P<it
                         r"/(?P<asset>[^/?#]+)$", re.IGNORECASE)
 # Schluessel der GDWH-Asset-Beschreibung (laengere zuerst: 'TerrainModel 1' vor 'TerrainModel')
 DESCRIPTION_KEYS = ("Area", "TerrainModel 1", "TerrainModel 2", "TerrainModel",
-                    "SourceReferenceSystem", "CameraSystem", "Acquisition time", "LineId",
+                    "SourceReferenceSystem", "Unit", "CameraSystem", "Acquisition time", "LineId",
                     "Commentary")
 _DESC_KEY_PATTERN = re.compile(r"(?:^|, )(" + "|".join(re.escape(k) for k in DESCRIPTION_KEYS)
                                + r"): ")

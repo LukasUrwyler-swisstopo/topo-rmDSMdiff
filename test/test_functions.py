@@ -84,7 +84,8 @@ def test_defaults_und_umgebungen():
 def test_beschreibung_baut_echtes_dsm_raster_asset_nach():
     desc = stac_import.build_description(
         "GUPPENFIRN", ["Digital Surface Model (DSM photogrammetric autocorrelation)"], DMC,
-        [L004, L003], "Digital Surface Model  - Raster Mosaic (DSM photogrammetric autocorrelation)")
+        [L004, L003], "Digital Surface Model  - Raster Mosaic (DSM photogrammetric autocorrelation)",
+        unit=None)
     assert desc == REAL_DSM_RASTER_DESCRIPTION
 
 
@@ -100,11 +101,14 @@ def test_beschreibung_diff_mit_zwei_terrainmodellen():
     assert desc == (
         "Area: GUPPENFIRN, TerrainModel 1: 2026-DSM-photogrammetric, TerrainModel 2: "
         "2025-swissSURFACE3D-DSM, SourceReferenceSystem: "
-        "(EPSG:2056) CH1903+ / LV95_LN02, CameraSystem: Leica DMC-4, Acquisition time: "
+        "(EPSG:2056) CH1903+ / LV95_LN02, Unit: metre, CameraSystem: Leica DMC-4, Acquisition time: "
         "2026-08-13T08:22:21.00,2026-08-13T08:27:50.00, LineId: "
         "20260813_0822_41216_003_082221,20260813_0822_41216_004_082750, Commentary: Digital "
         "Surface Model - Difference (TerrainModel 1 minus TerrainModel 2, negative = loss)")
     assert stac_import.area_from_description(desc) == "GUPPENFIRN"
+    f = stac_import.description_fields(desc)
+    assert f["Unit"] == "metre"
+    assert f["SourceReferenceSystem"] == "(EPSG:2056) CH1903+ / LV95_LN02"
     assert label("swissALTI3D", [""]) == "swissALTI3D"
     assert label("swissALTI3D", ["2019"]) == "2019-swissALTI3D"
     assert label("", ["2019"]) == ""
