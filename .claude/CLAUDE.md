@@ -32,6 +32,13 @@ Fachlicher Hintergrund, Ablauf und Konventionen: `README.md` im Projektordner.
 - Beschreibung als Text in einer Funktion (`stac_import.build_description`), Muster der GDWH-Assets,
   Schlüssel `TerrainModel 1` / `TerrainModel 2`. Test gegen das echte DSM-RASTER-Asset.
   `Unit: metre` nach SourceReferenceSystem, fest im Code (`ASSET_UNIT`, kein GUI-Feld, Entscheid Nutzer).
+  Danach `VerticalAccuracy: <σ_dh> (1 sigma; LoD95 <1.96·σ_dh>)` (Wunsch Vorgesetzter, Entscheid
+  Nutzer 2026-10-26, `stac_import.vertical_accuracy`): GUI-Feld je DSM, Default = offizielle
+  Spezifikation DSM-Raster `0.5-1` m (1σ, `DEFAULT_SIGMA`), bei swissSURFACE3D als DSM alt `0.3` m
+  (`DEFAULT_SIGMA_S3D`, swissALTI3D-Produktinfo Kap. 1.4: 50-cm-LiDAR-Raster ±30 cm; die ±10 cm der
+  Produktseite sind die LiDAR-Basisdaten, Kap. 3.2.2 – Entscheid Nutzer); wechselt im GUI
+  mit der Quelle, Handeintrag bleibt. σ_dh = √(σ1² + σ2²), Bereich je Unter-/Obergrenze. Nicht `StandardDeviation` (Verwechslung mit STATISTICS_STDDEV). Werte auch in
+  den DIFF-Metadaten (`DSMDIFF_SIGMA_NEW/OLD`, `DSMDIFF_VERTICAL_ACCURACY`).
   Werte (Entscheid Nutzer, `stac_import.terrain_model_label`): `<JAHR>-<Name>`, z.B.
   `2026-DSM-photogrammetric`, `2025-swissSURFACE3D-DSM` (Jahre der Kacheln mit `/`); bei einem
   STAC-Link zusätzlich der Asset-Name in Klammern (nicht der ganze href), lokale Pfade nie.

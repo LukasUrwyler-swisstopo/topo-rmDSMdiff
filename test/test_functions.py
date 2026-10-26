@@ -116,6 +116,40 @@ def test_beschreibung_diff_mit_zwei_terrainmodellen():
         stac_import.build_description("", ["x"], DMC, [L003], "c")
 
 
+def test_beschreibung_vertical_accuracy():
+    # Spezifikation DSM-Raster 0.5-1 m (1 sigma): sigma_dh = sqrt(2) * sigma, LoD95 = 1.96 * sigma_dh
+    assert stac_import.DEFAULT_SIGMA == "0.5-1" and stac_import.DEFAULT_SIGMA_S3D == "0.3"
+    assert stac_import.parse_sigma("0.5-1") == (0.5, 1.0)
+    assert stac_import.parse_sigma(" 0,5 – 1 ") == (0.5, 1.0)
+    assert stac_import.parse_sigma("0.3") == (0.3, 0.3)
+    assert stac_import.sigma_text("0,50–1.0") == "0.5-1"
+    for bad in ("", "abc", "-0.5", "0", "1-0.5", "0.5-1-2"):
+        with pytest.raises(ValueError):
+            stac_import.parse_sigma(bad)
+    acc = stac_import.vertical_accuracy
+    assert acc("0.5-1", "0.5-1") == "0.71-1.41 (1 sigma; LoD95 1.39-2.77)"
+    assert acc("0.03", "0.03") == "0.04 (1 sigma; LoD95 0.08)"
+    assert acc("0.5-1", "0.1") == "0.51-1.00 (1 sigma; LoD95 1.00-1.97)"
+    assert acc("0.5-1", "0.3") == "0.58-1.04 (1 sigma; LoD95 1.14-2.05)"     # swissSURFACE3D
+    desc = stac_import.build_description(
+        "GUPPENFIRN", ["2026-DSM-photogrammetric", "2025-swissSURFACE3D-DSM"], DMC, [L003],
+        "c", accuracy=acc("0.5-1", "0.5-1"))
+    assert ", Unit: metre, VerticalAccuracy: 0.71-1.41 (1 sigma; LoD95 1.39-2.77), CameraSystem: " \
+        in desc
+    f = stac_import.description_fields(desc)
+    assert f["VerticalAccuracy"] == "0.71-1.41 (1 sigma; LoD95 1.39-2.77)"
+    assert f["Unit"] == "metre" and f["CameraSystem"] == DMC
+
+
+def test_runner_hoehengenauigkeit_default_je_quelle():
+    import _osgeo_runner as runner
+    assert runner._accuracy({}, True)[:2] == ("0.5-1", "0.3")
+    assert runner._accuracy({}, False)[:2] == ("0.5-1", "0.5-1")
+    # Feld vor DIFF-Metadaten vor Default
+    assert runner._accuracy({}, True, {"DSMDIFF_SIGMA_OLD": "1"})[1] == "1"
+    assert runner._accuracy({"sigma_alt": "0,2"}, True, {"DSMDIFF_SIGMA_OLD": "1"})[1] == "0.2"
+
+
 def test_beschreibung_terrainmodell_als_stac_link():
     href = ("https://sys-data.int.bgdi.ch/ch.swisstopo.spezialbefliegungen/kry-2026-08-13t08222100/"
             "kry-2026-08-13t08222100-dsm-raster.tif")
@@ -1225,7 +1259,7 @@ def test_runner_subprocess_info_und_diff(tmp_path):
     assert r.returncode == 1 and "FEHLER: DIFF-COG existiert bereits" in r.stdout
 
 
-def test_runner_import_scheitert_diff_bleibt(tmp_path, monkeypatch):
+def test_runner_import_scheitert_diff_bleibt(tmp_path, monkeypatch, caplog):
     _dd()
     import _osgeo_runner as runner
     import _stac_http
@@ -1267,11 +1301,42 @@ def test_runner_import_scheitert_diff_bleibt(tmp_path, monkeypatch):
     # Beschreibung: lokale Eingaben ohne Pfad, Jahr TerrainModel 1 aus der ersten LineID
     assert ("TerrainModel 1: 2026-DSM-photogrammetric, TerrainModel 2: 2019-swissALTI3D, "
             in seen["args"][3])
+    # Ohne Felder gilt die Spezifikation 0.5-1 m je DSM - in Beschreibung und DIFF-Metadaten
+    assert "Unit: metre, VerticalAccuracy: 0.71-1.41 (1 sigma; LoD95 1.39-2.77), " in seen["args"][3]
+    from osgeo import gdal
+    gdal.SetConfigOption("GDAL_PAM_ENABLED", "NO")
+    try:
+        ds = gdal.Open(str(out))
+        md = ds.GetMetadata()
+        ds = None
+    finally:
+        gdal.SetConfigOption("GDAL_PAM_ENABLED", None)
+    assert md["DSMDIFF_SIGMA_NEW"] == "0.5-1" and md["DSMDIFF_SIGMA_OLD"] == "0.5-1"
+    assert md["DSMDIFF_VERTICAL_ACCURACY"] == "0.71-1.41 (1 sigma; LoD95 1.39-2.77)"
     _no_item_writes(sess404)                 # die Vorpruefung selbst schreibt nichts
 
-    # datetime eines vorhandenen Items passt nicht -> Abbruch VOR der Rechnung
+    # Nur STAC-Import: die Felder gewinnen, Abweichung zu den DIFF-Metadaten -> Warnung
+    seen.clear()
+    imp = {"action": "stac_import", "diff_path": str(out), "stac": cfg["stac"],
+           "meta": dict(cfg["meta"], sigma_neu="0.5", sigma_alt="0,5")}
+    with caplog.at_level(logging.WARNING):
+        assert runner._stac_import(imp) == runner.EXIT_OK
+    assert "VerticalAccuracy: 0.71 (1 sigma; LoD95 1.39), " in seen["args"][3]
+    assert "weicht von den DIFF-Metadaten ab" in caplog.text
+    caplog.clear()
+    imp["meta"] = dict(cfg["meta"])          # ohne Felder: Werte aus dem DIFF, keine Warnung
+    assert runner._stac_import(imp) == runner.EXIT_OK
+    assert "VerticalAccuracy: 0.71-1.41 (1 sigma; LoD95 1.39-2.77), " in seen["args"][3]
+    assert "weicht von den DIFF-Metadaten ab" not in caplog.text
+
+    # Ungueltige Hoehengenauigkeit -> Abbruch vor jedem Download und vor der Rechnung
     out.unlink()
-    bad = FakeSession(_stac_handler({}, item=_item_json(dt="2026-08-13T09:00:00Z")))
+    with pytest.raises(ValueError, match="Hoehengenauigkeit"):
+        runner._dsm_diff(dict(cfg, meta=dict(cfg["meta"], sigma_alt="x")))
+    assert not out.exists()
+
+    # datetime eines vorhandenen Items passt nicht -> Abbruch VOR der Rechnung
+    bad =FakeSession(_stac_handler({}, item=_item_json(dt="2026-08-13T09:00:00Z")))
     monkeypatch.setattr(_stac_http, "get_session", lambda p=None: bad)
     with pytest.raises(ValueError, match="datetime"):
         runner._dsm_diff(cfg)
@@ -1333,6 +1398,25 @@ def test_gui_vorbelegung_vorschau_und_defaults(tmp_path):
         assert txt["link"].startswith("https://sys-data.int.bgdi.ch/")
         assert "TerrainModel 1: 2026-DSM-photogrammetric, TerrainModel 2: <Jahr nach" in txt["desc"]
         assert "-swissSURFACE3D-DSM, " in txt["desc"]
+        # Hoehengenauigkeit: Default je Quelle DSM alt, geht in Vorschau und Config
+        assert app.sigma_neu_var.get() == "0.5-1" and app.sigma_alt_var.get() == "0.3"
+        assert "VerticalAccuracy: 0.58-1.04 (1 sigma; LoD95 1.14-2.05), " in txt["desc"]
+        app.alt_mode_var.set(g.ALT_FILE)
+        app._on_alt_change()
+        assert app.sigma_alt_var.get() == "0.5-1"
+        app.sigma_alt_var.set("0.2")             # von Hand geaendert: bleibt beim Umschalten
+        app.alt_mode_var.set(g.ALT_S3D)
+        app._on_alt_change()
+        assert app.sigma_alt_var.get() == "0.2"
+        app._refresh_preview()
+        assert "VerticalAccuracy: 0.54-1.02 (1 sigma; LoD95 1.06-2.00), " in \
+            app._preview["desc"].cget("text")
+        assert app._build_cfg()["meta"]["sigma_alt"] == "0.2"
+        app.sigma_alt_var.set("x")
+        app._refresh_preview()
+        assert app._preview["desc"].cget("text").startswith("(Hoehengenauigkeit 'x'")
+        assert any(e.startswith("DSM alt: Hoehengenauigkeit") for e in app._validate())
+        app.sigma_alt_var.set(g.stac_import.DEFAULT_SIGMA)
         app.env_var.set("PROD")
         app._refresh_preview()
         assert app._preview["link"].cget("text").startswith("https://data.geo.admin.ch/")
@@ -1423,9 +1507,16 @@ def test_gui_vorbelegung_aus_stac_und_aus_diff():
         app._apply_diff_metadata({"DSMDIFF_DEFINITION": "dh", "DSMDIFF_STAC_ITEM": ITEM,
                                   "DSMDIFF_AREA": "GUPPENFIRN", "DSMDIFF_CAMERA": DMC,
                                   "DSMDIFF_LINE_IDS": f"{L003},{L004}",
-                                  "DSMDIFF_SOURCE_OLD_TYPE": "swissSURFACE3D"})
+                                  "DSMDIFF_SOURCE_OLD_TYPE": "swissSURFACE3D",
+                                  "DSMDIFF_SIGMA_NEW": "0.5", "DSMDIFF_SIGMA_OLD": "0.3-0.8"})
         assert app._auftragstyp() == "kry" and app.area_var.get() == "GUPPENFIRN"
         assert app.lineid_w.get_ids() == [L003, L004]
+        assert app.sigma_neu_var.get() == "0.5" and app.sigma_alt_var.get() == "0.3-0.8"
+        # DIFF mit eigenem DSM alt: der Wert aus dem DIFF gewinnt gegen den Default je Quelle
+        app.sigma_alt_var.set(g.stac_import.DEFAULT_SIGMA_S3D)
+        app._apply_diff_metadata({"DSMDIFF_DEFINITION": "dh", "DSMDIFF_SOURCE_OLD_TYPE": "file",
+                                  "DSMDIFF_SIGMA_NEW": "0.5-1", "DSMDIFF_SIGMA_OLD": "0.3"})
+        assert app.alt_mode_var.get() == g.ALT_FILE and app.sigma_alt_var.get() == "0.3"
         app._apply_diff_metadata({})
         assert "keine DSMDIFF-Metadaten" in app.import_diff_problem_lbl.cget("text")
     finally:

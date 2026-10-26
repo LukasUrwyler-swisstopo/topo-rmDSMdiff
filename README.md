@@ -32,11 +32,11 @@ Umschalter „Hell“/„Dark“ oben rechts).
 | **DSM aktuell** | Lokales DSM (Pfad) **oder STAC-Link** | Lokal (GeoTIFF/COG + TFW): Info-Zeile GSD, Grösse, CRS, Höhenbezug, NoData; Name `<JAHR>_<AREA>_DSM_<GSD>cm_LV95_<LN02\|LHN95>.tif` belegt Jahr, Area und Ausgabenamen vor. STAC-Link (href eines Assets, z.B. `…/<item>-dsm-raster.tif`): Area, CameraSystem, LineIDs und Jahr aus den STAC-Metadaten; der Auftragstyp bleibt (Standard `ram`, auch bei einem `kry`-Item) |
 | **DSM alt** | ● swissSURFACE3D (Standard) | Kacheln über die Ausdehnung von DSM aktuell; Jahr je Kachel aus dem STAC-Item, gewählt das jüngste **vor** dem Aufnahmejahr (feste Regel); Button „Kacheln suchen“ (amber) zeigt Kacheln, Jahre, fehlende Kacheln; danach „Kacheln geladen“ (grün), bis sich DSM aktuell oder das Aufnahmejahr ändert; grau bei Eigenem DSM |
 | | ○ Eigenes DSM (Pfad oder STAC-Link) | ein Band, gleiche Prüfungen wie DSM aktuell; Höhenbezug aus Tag, STAC-Beschreibung oder Dateiname (`_LV95_LN02`); bei einem Link werden TerrainModel 2 und Jahr vorbelegt |
-| **Meta-Informationen / STAC** | Auftragstyp (Standard `ram`), CameraSystem (Standard `Leica DMC-4`), Area, Jahr, TerrainModel 1, TerrainModel 2, SourceRefSys (fix), Commentary, LineIDs | Listen wie `topo-GDWHimport`. LineIDs per Excel-Paste, geprüft, sortiert, ohne Duplikate (`_line_ids.normalize`) |
+| **Meta-Informationen / STAC** | Auftragstyp (Standard `ram`), CameraSystem (Standard `Leica DMC-4`), Area, Jahr, TerrainModel 1, TerrainModel 2, Höhengenauigkeit je DSM (1σ; Standard DSM aktuell `0.5-1` m, DSM alt `0.3` m bei swissSURFACE3D bzw. `0.5-1` m bei eigenem DSM), SourceRefSys (fix), Commentary, LineIDs | Listen wie `topo-GDWHimport`. LineIDs per Excel-Paste, geprüft, sortiert, ohne Duplikate (`_line_ids.normalize`). Höhengenauigkeit als Zahl oder Bereich, siehe STAC-Import |
 | | Vorschau STAC | StacItemIdDatetime, Item-ID, Asset-Name, Titel, Browser-Link (klickbar), kompletter Beschreibungstext |
 | **Ausgabe** | DIFF-COG (.tif) | Vorschlag `<JAHR>_<AREA>_DSM-DIFF_<GSD>cm_LV95.tif`; Mosaik `<JAHR>_<AREA>_swissSURFACE3D_50cm_LV95_LN02.tif` daneben. Gleichnamige Dateien werden **immer ersetzt** – erst nach bestandener Prüfung, bei Fehler bleibt die alte Datei |
 | **STAC-Import** | Checkbox, Umgebung **INT (Standard)** / PROD, Secrets-Ordner, „vorhandenes STAC-Asset ersetzen“ | PROD nur nach Bestätigungsdialog mit Item-ID und Asset-Name. Fehlt das Item, wird es angelegt |
-| | Vorhandenes DIFF-COG + „▶ Nur STAC-Import dieses DIFF“ | Import eines schon gerechneten DIFF ohne neue Rechnung. Beim Wählen der Datei werden Area, LineIDs, Auftragstyp und CameraSystem aus den `DSMDIFF_*`-Metadaten vorbelegt; nach jedem Lauf steht das neue DIFF hier schon drin |
+| | Vorhandenes DIFF-COG + „▶ Nur STAC-Import dieses DIFF“ | Import eines schon gerechneten DIFF ohne neue Rechnung. Beim Wählen der Datei werden Area, LineIDs, Auftragstyp, CameraSystem und Höhengenauigkeit aus den `DSMDIFF_*`-Metadaten vorbelegt; nach jedem Lauf steht das neue DIFF hier schon drin |
 | unten | ▶ DSM-DIFF BERECHNEN, Abbrechen, Log löschen, Terminal | Start-Button amber = Angaben fehlen, grün = startbereit |
 
 Das Aufnahmejahr (von DSM aktuell) kommt aus dem Datum der ersten LineID, ohne LineIDs aus dem
@@ -103,7 +103,9 @@ optional STAC: Item prüfen (fehlt → anlegen) → Asset anlegen (PUT asset) �
 TIFF-Metadaten des Diff (englisch, weil die Datei über STAC öffentlich wird):
 `DSMDIFF_DEFINITION`, `DSMDIFF_SOURCE_NEW`, `DSMDIFF_SOURCE_OLD`, `DSMDIFF_SOURCE_OLD_TYPE`,
 `DSMDIFF_SOURCE_OLD_YEARS`, `DSMDIFF_SOURCE_OLD_TILES`, `DSMDIFF_HEIGHT_REF_NEW/OLD`,
-`DSMDIFF_RESAMPLING`, `DSMDIFF_LINE_IDS`, `DSMDIFF_STAC_ITEM`, `DSMDIFF_AREA`, `DSMDIFF_CREATED`,
+`DSMDIFF_RESAMPLING`, `DSMDIFF_LINE_IDS`, `DSMDIFF_STAC_ITEM`, `DSMDIFF_AREA`,
+`DSMDIFF_SIGMA_NEW/OLD` (Höhengenauigkeit 1σ je DSM, z.B. `0.5-1`), `DSMDIFF_VERTICAL_ACCURACY`
+(wie in der STAC-Beschreibung), `DSMDIFF_CREATED`,
 `DSMDIFF_SOFTWARE`, `TIFFTAG_DATETIME`, Banddescription, Einheit `metre`, Statistik
 (min/max/mittel/std/Anteil gültig). Alles im TIFF selbst, keine aux.xml.
 
@@ -140,8 +142,23 @@ Laufordner; die Caches bei Platzbedarf von Hand leeren.
   `2026-DSM-photogrammetric (kry-2026-08-13t08222100-dsm-raster.tif)`; ein lokaler Pfad nie.
   Jahr TerrainModel 1 = Jahr der ersten LineID, TerrainModel 2 = Feld „Jahr“ (beim STAC-Link vorbelegt).
   `Unit: metre` (Einheit der dh-Werte) steht fest im Code, ohne Feld im GUI.
+  `VerticalAccuracy` = Höhengenauigkeit des dh (1σ) und Nachweisgrenze LoD95, aus den Feldern
+  „Höhengenauigkeit“ je DSM: σ_dh = √(σ_aktuell² + σ_alt²) (zwei Befliegungen, Fehler
+  unabhängig), LoD95 = 1.96 · σ_dh, bei einem Bereich je für Unter- und Obergrenze. Änderungen
+  kleiner als LoD95 sind statistisch nicht vom Rauschen zu unterscheiden. Bewusst nicht
+  `StandardDeviation` – das wäre mit der Statistik `STATISTICS_STDDEV` der dh-Werte im COG zu
+  verwechseln. Standardwerte (Entscheid, im GUI änderbar):
+
+  | DSM | σ (1σ) | Quelle |
+  |---|---|---|
+  | photogrammetrisches DSM (aktuell oder eigenes DSM alt) | `0.5-1` m | Spezifikation der DSM-Raster |
+  | swissSURFACE3D Raster | `0.3` m | swissALTI3D-Produktinfo (swisstopo, März 2022) Kap. 1.4: 50-cm-Raster aus neuen LiDAR-Daten ±30 cm 1σ (Lage und Höhe). Die ±10 cm Höhe (Kap. 3.2.2, auch [Produktseite swissSURFACE3D Raster](https://www.swisstopo.admin.ch/de/hoehenmodell-swisssurface3d-raster)) gelten für die LiDAR-Basisdaten – 0.3 m steht wie der DSM-Wert auf Ebene Raster |
+
+  Beim Umschalten von DSM alt wechselt der Default mit, ein von Hand geänderter Wert bleibt.
+  Ältere Referenzen von Hand eintragen, z.B. swissALTI3D alte LiDAR-Generation `0.5`,
+  Stereokorrelation über 2000 m ü. M. `1-3` (räumliche Verteilung: Nachführungsinformation).
   ```
-  Area: GUPPENFIRN, TerrainModel 1: 2026-DSM-photogrammetric, TerrainModel 2: 2025-swissSURFACE3D-DSM, SourceReferenceSystem: (EPSG:2056) CH1903+ / LV95_LN02, Unit: metre, CameraSystem: Leica DMC-4, Acquisition time: 2026-08-13T08:22:21.00,2026-08-13T08:27:50.00, LineId: 20260813_0822_41216_003_082221,20260813_0822_41216_004_082750, Commentary: Digital Surface Model - Difference (TerrainModel 1 minus TerrainModel 2, negative = loss)
+  Area: GUPPENFIRN, TerrainModel 1: 2026-DSM-photogrammetric, TerrainModel 2: 2025-swissSURFACE3D-DSM, SourceReferenceSystem: (EPSG:2056) CH1903+ / LV95_LN02, Unit: metre, VerticalAccuracy: 0.58-1.04 (1 sigma; LoD95 1.14-2.05), CameraSystem: Leica DMC-4, Acquisition time: 2026-08-13T08:22:21.00,2026-08-13T08:27:50.00, LineId: 20260813_0822_41216_003_082221,20260813_0822_41216_004_082750, Commentary: Digital Surface Model - Difference (TerrainModel 1 minus TerrainModel 2, negative = loss)
   ```
 - Upload: Multipart wie rapidmapping, Prüfsumme sha2-256-Multihash mit hashlib, danach Kontrolle
   (`checksum:multihash` = lokal, `href` erreichbar) und Browser-Link im Log.
@@ -149,7 +166,8 @@ Laufordner; die Caches bei Platzbedarf von Hand leeren.
 - Schlägt nur der Import fehl, bleibt das fertige Diff liegen (Exit-Code 3, eigener Hinweis im GUI).
   Das DIFF steht danach im Abschnitt STAC-Import unter „Vorhandenes DIFF-COG“; nachholen mit
   **„▶ Nur STAC-Import dieses DIFF“** – TerrainModel 2 (Jahre) kommt dann aus den Metadaten des
-  Diff, die Item-ID aus den LineIDs muss zu `DSMDIFF_STAC_ITEM` passen.
+  Diff, die Item-ID aus den LineIDs muss zu `DSMDIFF_STAC_ITEM` passen. Die Höhengenauigkeit wird
+  aus dem DIFF vorbelegt; weicht die Eingabe davon ab, gilt die Eingabe (mit Warnung).
 - Das Diff geht **direkt nach STAC, nicht über den GDWH** – es liegt also nicht im GDWH-Archiv.
   Kommen DSM-RASTER und DOP später über die GDWH-STAC-Pipeline in dasselbe Item, bleibt das
   DSM-DIFF-Asset bestehen – so ist es bereits bei den Quick-DOPs (direkt in ein neues Item, das

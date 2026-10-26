@@ -486,6 +486,7 @@ class DSMDiffApp(tk.Tk):
         self._s3d_result = None      # letztes Ergebnis 'Kacheln suchen'
         self._s3d_key = None         # Eingaben, fuer die es gilt
         self._out_auto = ""          # zuletzt vorgeschlagener Ausgabepfad
+        self._sigma_alt_auto = stac_import.DEFAULT_SIGMA_S3D    # Default sigma DSM alt je Quelle
         self._preview_sig = None
         self._progress_start = None
 
@@ -734,6 +735,22 @@ class DSMDiffApp(tk.Tk):
         self.tm2_year_var = tk.StringVar()
         ttk.Entry(self._tm2_file_frame, textvariable=self.tm2_year_var, width=8).pack(side="left")
         r += 1
+        self._key(sec, "Höhengenauigkeit:", r)
+        acc = ttk.Frame(sec)
+        acc.grid(row=r, column=1, columnspan=2, sticky="w", padx=(8, 0), pady=3)
+        self.sigma_neu_var = tk.StringVar(value=stac_import.DEFAULT_SIGMA)
+        self.sigma_alt_var = tk.StringVar(value=self._sigma_alt_auto)
+        for text, var in (("DSM aktuell", self.sigma_neu_var), ("    DSM alt", self.sigma_alt_var)):
+            ttk.Label(acc, text=text).pack(side="left")
+            ttk.Entry(acc, textvariable=var, width=8).pack(side="left", padx=(4, 4))
+            ttk.Label(acc, text="m").pack(side="left")
+        ttk.Label(acc, text="  (1σ, vertikal)").pack(side="left")
+        self._hint(sec, f"Standard {stac_import.DEFAULT_SIGMA} m = Spezifikation der DSM-Raster, "
+                        f"swissSURFACE3D {stac_import.DEFAULT_SIGMA_S3D} m (swisstopo, 50-cm-Raster "
+                        f"aus LiDAR); Zahl oder Bereich.\n"
+                        f"In der Beschreibung als VerticalAccuracy: σ_dh = √(σ1² + σ2²), LoD95 = {stac_import.LOD95_FACTOR} · σ_dh "
+                        f"(Änderungen darunter sind nicht signifikant)", r + 1)
+        r += 2
         self._key(sec, "SourceRefSys:", r)
         srs_row = ttk.Frame(sec)
         srs_row.grid(row=r, column=1, sticky="w", padx=(8, 0), pady=3)
@@ -837,7 +854,8 @@ class DSMDiffApp(tk.Tk):
                                      command=self._start_import_only)
         self.import_btn.pack(side="left")
         h = ttk.Label(imp_row, font=("", 8), justify="left",
-                      text="  ohne neue Rechnung; Area, LineIDs und Auftragstyp kommen aus dem DIFF,\n"
+                      text="  ohne neue Rechnung; Area, LineIDs, Auftragstyp und Höhengenauigkeit "
+                           "kommen aus dem DIFF,\n"
                            "  Umgebung, Secrets und 'ersetzen' von oben. Nach einem Lauf steht "
                            "das neue DIFF schon hier.")
         h.pack(side="left")
@@ -910,7 +928,8 @@ class DSMDiffApp(tk.Tk):
                            self.import_diff_problem_lbl, on_diff=self._apply_diff_metadata)
 
     def _apply_diff_metadata(self, md):
-        """Area, LineIDs, Auftragstyp, CameraSystem aus den DSMDIFF_*-Metadaten eines DIFF."""
+        """Area, LineIDs, Auftragstyp, CameraSystem, Hoehengenauigkeit aus den DSMDIFF_*-Metadaten
+        eines DIFF (aeltere DIFF ohne DSMDIFF_SIGMA_*: die Felder bleiben)."""
         if not md.get("DSMDIFF_DEFINITION"):
             self.import_diff_problem_lbl.configure(
                 text="⚠ keine DSMDIFF-Metadaten – nicht mit diesem Werkzeug erstellt?")
@@ -936,6 +955,11 @@ class DSMDiffApp(tk.Tk):
         if md.get("DSMDIFF_SOURCE_OLD_TYPE") == "file":
             self.alt_mode_var.set(ALT_FILE)          # TerrainModel 2 kommt dann aus dem GUI
             self._on_alt_change()
+        # erst nach dem Umschalten, sonst ersetzt der Default je Quelle den Wert aus dem DIFF
+        if md.get("DSMDIFF_SIGMA_NEW") and md.get("DSMDIFF_SIGMA_OLD"):
+            self.sigma_neu_var.set(md["DSMDIFF_SIGMA_NEW"])
+            self.sigma_alt_var.set(md["DSMDIFF_SIGMA_OLD"])
+            filled.append(f"Höhengenauigkeit {md['DSMDIFF_SIGMA_NEW']} / {md['DSMDIFF_SIGMA_OLD']} m")
         self._preview_sig = None
         if filled:
             self._log(f"Vorbelegt aus dem DIFF ({os.path.basename(self.import_diff_var.get())}): "
@@ -1036,6 +1060,10 @@ class DSMDiffApp(tk.Tk):
         else:
             self.tm2_s3d_lbl.pack_forget()
             self._tm2_file_frame.pack(side="left")
+        # Default sigma DSM alt je Quelle - ein von Hand geaenderter Wert bleibt
+        if self.sigma_alt_var.get().strip() == self._sigma_alt_auto:
+            self._sigma_alt_auto = stac_import.DEFAULT_SIGMA_S3D if s3d else stac_import.DEFAULT_SIGMA
+            self.sigma_alt_var.set(self._sigma_alt_auto)
 
     def _on_camera_change(self):
         removed = self.lineid_w.refresh_camera()
@@ -1101,7 +1129,9 @@ class DSMDiffApp(tk.Tk):
         try:
             desc = stac_import.build_description(
                 self.area_var.get().strip() or "<AREA>", self._tm_preview(), cam, ids,
-                self.commentary_var.get().strip() or stac_import.DEFAULT_COMMENTARY)
+                self.commentary_var.get().strip() or stac_import.DEFAULT_COMMENTARY,
+                accuracy=stac_import.vertical_accuracy(self.sigma_neu_var.get(),
+                                                       self.sigma_alt_var.get()))
         except ValueError as e:
             desc = f"({e})"
         return {"dt": dt, "item": item, "asset": asset, "title": stac_import.ASSET_TITLE,
@@ -1112,6 +1142,7 @@ class DSMDiffApp(tk.Tk):
                self.auftragstyp_var.get(), self.area_var.get(), self.jahr_var.get(),
                self.tm1_var.get(), self.tm2_var.get(), self.tm2_year_var.get(),
                self.commentary_var.get(), self.alt_mode_var.get(),
+               self.sigma_neu_var.get(), self.sigma_alt_var.get(),
                self.out_var.get(), self.neu_var.get(), self.alt_var.get(), id(self._s3d_result))
         if sig == self._preview_sig:
             return
@@ -1390,6 +1421,13 @@ class DSMDiffApp(tk.Tk):
             if not self._staging_dir:
                 errors.append("Staging-Ordner fehlt.")
 
+        # Steht immer in den DIFF-Metadaten, nicht nur in der STAC-Beschreibung
+        for role, var in (("DSM aktuell", self.sigma_neu_var), ("DSM alt", self.sigma_alt_var)):
+            try:
+                stac_import.parse_sigma(var.get())
+            except ValueError as e:
+                errors.append(f"{role}: {e}")
+
         if stac_on:
             if not self.lineid_w.get_ids():
                 errors.append("STAC-Import: LineIDs fehlen (daraus kommt die Item-ID).")
@@ -1436,6 +1474,8 @@ class DSMDiffApp(tk.Tk):
                 "line_ids": self.lineid_w.get_ids(), "area": self.area_var.get().strip(),
                 "tm1": self.tm1_var.get(), "tm2": self.tm2_var.get(),
                 "tm2_year": self.tm2_year_var.get().strip(),
+                "sigma_neu": self.sigma_neu_var.get().strip(),
+                "sigma_alt": self.sigma_alt_var.get().strip(),
                 "commentary": self.commentary_var.get().strip() or stac_import.DEFAULT_COMMENTARY}
 
     def _stac_cfg(self, enabled):

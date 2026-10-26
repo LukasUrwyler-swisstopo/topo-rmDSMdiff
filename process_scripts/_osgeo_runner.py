@@ -175,6 +175,23 @@ def _terrain_models(meta, line_ids, camera, alt_quelle, s3d_years, neu_link=None
     return [tm1, tm2]
 
 
+def _accuracy(meta, s3d, md=None):
+    """Hoehengenauigkeit 1 sigma je DSM (GUI-Felder, sonst DIFF-Metadaten, sonst Default je
+    Quelle: DSM-Spezifikation bzw. swissSURFACE3D) -> (sigma_neu, sigma_alt, VerticalAccuracy
+    der Beschreibung). ValueError bei falscher Eingabe."""
+    import stac_import
+    md = md or {}
+    s_neu = stac_import.sigma_text(meta.get("sigma_neu") or md.get("DSMDIFF_SIGMA_NEW")
+                                   or stac_import.DEFAULT_SIGMA)
+    s_alt = stac_import.sigma_text(meta.get("sigma_alt") or md.get("DSMDIFF_SIGMA_OLD")
+                                   or (stac_import.DEFAULT_SIGMA_S3D if s3d
+                                       else stac_import.DEFAULT_SIGMA))
+    accuracy = stac_import.vertical_accuracy(s_neu, s_alt)
+    logger.info(f"Hoehengenauigkeit 1 sigma: DSM aktuell {s_neu} m, DSM alt {s_alt} m "
+                f"-> dh {accuracy}")
+    return s_neu, s_alt, accuracy
+
+
 def _dsm_diff(cfg):
     import dsm_diff
     import stac_import
@@ -199,9 +216,11 @@ def _dsm_diff(cfg):
                                      else cfg.get("dsm_alt", "")))
     logger.info(f"Ausgabe     : {cfg['out_path']}")
     logger.info("Vorzeichen  : dh = DSM aktuell - DSM alt (negativ = Abtrag/Verlust)")
+    sigma_neu, sigma_alt, accuracy = _accuracy(meta, alt_quelle == dsm_diff.ALT_S3D)
 
     item = None
-    extra = {"DSMDIFF_AREA": area}
+    extra = {"DSMDIFF_AREA": area, "DSMDIFF_SIGMA_NEW": sigma_neu, "DSMDIFF_SIGMA_OLD": sigma_alt,
+             "DSMDIFF_VERTICAL_ACCURACY": accuracy}
     if line_ids:
         ids = stac_import.normalized_line_ids(line_ids, camera)
         extra["DSMDIFF_LINE_IDS"] = ",".join(ids)
@@ -249,7 +268,8 @@ def _dsm_diff(cfg):
         if import_on:
             state["description"] = stac_import.build_description(
                 area, _terrain_models(meta, line_ids, camera, alt_quelle, years, neu_link, alt_link),
-                camera, line_ids, meta.get("commentary") or stac_import.DEFAULT_COMMENTARY)
+                camera, line_ids, meta.get("commentary") or stac_import.DEFAULT_COMMENTARY,
+                accuracy=accuracy)
             logger.info(f"Asset-Beschreibung: {state['description']}")
             stac_import.check_gsd(state["check"], info["neu"]["res_x"])
 
@@ -329,14 +349,20 @@ def _stac_import(cfg):
         years = [y for y in md.get("DSMDIFF_SOURCE_OLD_YEARS", "").split(",") if y]
     else:
         alt_quelle, years = "datei", []
+    logger.info(f"=== STAC-Import (vorhandenes DIFF) ===\nDIFF: {path}  (GSD {gsd:g} m)")
+    # Hoehengenauigkeit: GUI-Felder (aus dem DIFF vorbelegt) gewinnen, Abweichung zum DIFF melden
+    accuracy = _accuracy(meta, alt_quelle == "swisssurface3d", md)[2]
+    if md.get("DSMDIFF_VERTICAL_ACCURACY") not in (None, accuracy):
+        logger.warning(f"VerticalAccuracy {accuracy} weicht von den DIFF-Metadaten ab "
+                       f"({md['DSMDIFF_VERTICAL_ACCURACY']}) - importiert wird die Eingabe.")
     # Links der Eingaben aus den DIFF-Metadaten (DSMDIFF_SOURCE_OLD ist bei einem Link der Link)
     old = md.get("DSMDIFF_SOURCE_OLD")
     description = stac_import.build_description(
         area, _terrain_models(meta, line_ids, camera, alt_quelle, years,
                               md.get("DSMDIFF_SOURCE_NEW_HREF") or None,
                               old if alt_quelle == "datei" and stac_import.is_url(old) else None),
-        camera, line_ids, meta.get("commentary") or stac_import.DEFAULT_COMMENTARY)
-    logger.info(f"=== STAC-Import (vorhandenes DIFF) ===\nDIFF: {path}  (GSD {gsd:g} m)")
+        camera, line_ids, meta.get("commentary") or stac_import.DEFAULT_COMMENTARY,
+        accuracy=accuracy)
     res = stac_import.run_stac_import(
         path, env, item, description, gsd, line_ids, camera, area, bounds_lv95=bounds,
         secrets_dir=stac.get("secrets_dir"), replace_existing=bool(stac.get("replace_existing")),

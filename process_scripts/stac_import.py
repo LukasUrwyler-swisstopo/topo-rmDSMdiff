@@ -21,6 +21,7 @@ Grundregeln (siehe .claude/CLAUDE.md):
 """
 
 import logging
+import math
 import re
 
 import _line_ids
@@ -38,6 +39,13 @@ REF_ASSET_SUFFIX = "-dsm-raster.tif"      # DSM-RASTER desselben Items (Vergleic
 ASSET_MEDIA_TYPE = "image/tiff; application=geotiff; profile=cloud-optimized"
 ASSET_EPSG = 2056
 ASSET_UNIT = "metre"                      # Einheit der dh-Werte, fest in der Beschreibung (Entscheid Nutzer 2026-10-26)
+# Hoehengenauigkeit 1 sigma je DSM in Meter (Entscheid Nutzer 2026-10-26): Spezifikation der
+# photogrammetrischen DSM-Raster; swissSURFACE3D = 50-cm-Raster aus neuen LiDAR-Daten +/- 30 cm
+# laut swissALTI3D-Produktinfo (Maerz 2022) Kap. 1.4 - die +/- 10 cm (Kap. 3.2.2, Produktseite
+# swissSURFACE3D Raster) gelten fuer die LiDAR-Basisdaten, nicht fuers Raster
+DEFAULT_SIGMA = "0.5-1"
+DEFAULT_SIGMA_S3D = "0.3"
+LOD95_FACTOR = 1.96                       # Nachweisgrenze 95 % = 1.96 * sigma_dh
 GSD_TOLERANCE_M = 0.001
 
 # Auswahllisten wie topo-GDWHimport/GUI_GDWHimport.py (Stand 2026-10-20)
@@ -153,15 +161,52 @@ def terrain_model_label(model, years=None, link=None):
     return f"{label} ({parse_asset_href(link)['asset']})" if link else label
 
 
+def parse_sigma(text):
+    """Hoehengenauigkeit 1 sigma in Meter: '0.5-1', '0,5–1' oder '0.5' -> (0.5, 1.0) bzw.
+    (0.5, 0.5). ValueError, wenn keine positive Zahl oder Untergrenze > Obergrenze."""
+    t = str(text or "").strip().replace(",", ".").replace("–", "-")
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*(?:-\s*(\d+(?:\.\d+)?))?", t)
+    if not m:
+        raise ValueError(f"Hoehengenauigkeit {text!r}: Zahl oder Bereich in Meter erwartet, "
+                         f"z.B. {DEFAULT_SIGMA}")
+    lo, hi = float(m.group(1)), float(m.group(2) or m.group(1))
+    if lo <= 0 or hi < lo:
+        raise ValueError(f"Hoehengenauigkeit {text!r}: positiv und Untergrenze <= Obergrenze "
+                         f"erwartet")
+    return lo, hi
+
+
+def _range_text(lo, hi, fmt):
+    lo, hi = fmt.format(lo), fmt.format(hi)
+    return lo if lo == hi else f"{lo}-{hi}"
+
+
+def sigma_text(text):
+    """Eingabe normalisiert fuer die DSMDIFF-Metadaten, z.B. '0,5–1' -> '0.5-1'."""
+    return _range_text(*parse_sigma(text), "{:g}")
+
+
+def vertical_accuracy(sigma_neu, sigma_alt):
+    """VerticalAccuracy der DIFF-Beschreibung (Entscheid Nutzer 2026-10-26). Die Fehler der
+    beiden Befliegungen gelten als unabhaengig: sigma_dh = sqrt(s1² + s2²), LoD95 = 1.96 *
+    sigma_dh; Bereiche je fuer Unter- und Obergrenze. Z.B. '0.5-1' und '0.5-1' ->
+    '0.71-1.41 (1 sigma; LoD95 1.39-2.77)'."""
+    (lo1, hi1), (lo2, hi2) = parse_sigma(sigma_neu), parse_sigma(sigma_alt)
+    lo, hi = math.hypot(lo1, lo2), math.hypot(hi1, hi2)
+    return (f"{_range_text(lo, hi, '{:.2f}')} (1 sigma; LoD95 "
+            f"{_range_text(LOD95_FACTOR * lo, LOD95_FACTOR * hi, '{:.2f}')})")
+
+
 def build_description(area, terrain_models, camera, line_ids, commentary,
-                      source_ref_sys=SOURCE_REF_SYS, unit=ASSET_UNIT):
+                      source_ref_sys=SOURCE_REF_SYS, unit=ASSET_UNIT, accuracy=None):
     """Asset-Beschreibung als Text im Muster der GDWH-Assets (kein JSON).
 
     Reihenfolge und Schreibweise wie beim DSM-RASTER-Asset. Ein Terrainmodell ergibt
     'TerrainModel: ...' (so baut der GDWH die bestehenden Assets), zwei ergeben
     'TerrainModel 1: ..., TerrainModel 2: ...' (Entscheid 3). Acquisition time und LineId
-    sortiert, kommagetrennt ohne Leerzeichen. 'Unit: metre' nach SourceReferenceSystem
-    gibt es nur im DIFF (unit=None ergibt das reine GDWH-Muster)."""
+    sortiert, kommagetrennt ohne Leerzeichen. 'Unit: metre' und 'VerticalAccuracy: ...'
+    (vertical_accuracy) nach SourceReferenceSystem gibt es nur im DIFF (unit=None,
+    accuracy=None ergibt das reine GDWH-Muster)."""
     if isinstance(terrain_models, str):
         terrain_models = [terrain_models]
     if not str(area or "").strip():
@@ -177,6 +222,8 @@ def build_description(area, terrain_models, camera, line_ids, commentary,
     parts.append(f"SourceReferenceSystem: {source_ref_sys}")
     if unit:
         parts.append(f"Unit: {unit}")
+    if accuracy:
+        parts.append(f"VerticalAccuracy: {accuracy}")
     parts += [f"CameraSystem: {camera}",
               f"Acquisition time: {','.join(acquisition_times(ids, camera))}",
               f"LineId: {','.join(ids)}",
@@ -204,8 +251,8 @@ _DATA_HREF = re.compile(r"^https?://(?P<host>[^/]+)/(?P<collection>[^/]+)/(?P<it
                         r"/(?P<asset>[^/?#]+)$", re.IGNORECASE)
 # Schluessel der GDWH-Asset-Beschreibung (laengere zuerst: 'TerrainModel 1' vor 'TerrainModel')
 DESCRIPTION_KEYS = ("Area", "TerrainModel 1", "TerrainModel 2", "TerrainModel",
-                    "SourceReferenceSystem", "Unit", "CameraSystem", "Acquisition time", "LineId",
-                    "Commentary")
+                    "SourceReferenceSystem", "Unit", "VerticalAccuracy", "CameraSystem",
+                    "Acquisition time", "LineId", "Commentary")
 _DESC_KEY_PATTERN = re.compile(r"(?:^|, )(" + "|".join(re.escape(k) for k in DESCRIPTION_KEYS)
                                + r"): ")
 
