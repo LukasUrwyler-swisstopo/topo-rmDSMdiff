@@ -57,6 +57,10 @@ AUFTRAGSTYP_LABELS = [f"{c} - {n}" for c, n in stac_import.AUFTRAGSTYPEN.items()
 DEFAULT_AUFTRAGSTYP_LABEL = next(l for l in AUFTRAGSTYP_LABELS
                                  if l.split(" - ", 1)[0] == stac_import.DEFAULT_AUFTRAGSTYP)
 
+# Aufloesung des DIFF (Wunsch Vorgesetzter 2026-10-27): Standard 1 m (gemittelt), 0.5 m
+OUT_GSD_CHOICES = {"1 m": 1.0, "0.5 m": 0.5}
+DEFAULT_OUT_GSD = "1 m"
+
 # DSM aus dem DMC-Converter: <JAHR>_<AREA>_DSM_<GSD>cm_LV95_<LN02|LHN95>.tif
 DSM_NAME_PATTERN = re.compile(r"^(\d{4})_(.+?)_DSM_(\d+)cm_LV95_(LN02|LHN95)\.tiff?$",
                               re.IGNORECASE)
@@ -685,8 +689,8 @@ class DSMDiffApp(tk.Tk):
         self._hint(self._file_frame, "Ein Band, sonst gleiche Prüfungen wie DSM aktuell.\n"
                                      "Höhenbezug aus CRS-Tag, STAC-Beschreibung oder Dateiname "
                                      "(_LV95_LN02) – muss zu DSM aktuell passen.\n"
-                                     "Bei einem STAC-Link werden TerrainModel 2 und dessen Jahr "
-                                     "vorbelegt.", 3)
+                                     "Bei einem STAC-Link werden DigitalSurfaceModel 2 und "
+                                     "dessen Jahr vorbelegt.", 3)
 
     def _build_meta(self, parent):
         sec = self._section(parent, "Meta-Informationen / STAC")
@@ -715,12 +719,12 @@ class DSMDiffApp(tk.Tk):
         self._hint(sec, "Aufnahmejahr (Ausgabenamen; Jahreswahl swissSURFACE3D, wenn keine LineIDs)",
                    r + 1)
         r += 2
-        self._key(sec, "TerrainModel 1:", r)
+        self._key(sec, "DigitalSurfaceModel 1:", r)
         self.tm1_var = tk.StringVar(value=stac_import.TERRAIN_MODEL_1_DEFAULT)
         ttk.Combobox(sec, textvariable=self.tm1_var, values=stac_import.TERRAIN_MODELS,
                      state="readonly", width=60).grid(row=r, column=1, sticky="w", padx=(8, 0), pady=3)
         r += 1
-        self._key(sec, "TerrainModel 2:", r)
+        self._key(sec, "DigitalSurfaceModel 2:", r)
         tm2 = ttk.Frame(sec)
         tm2.grid(row=r, column=1, columnspan=2, sticky="w", padx=(8, 0), pady=3)
         self.tm2_s3d_lbl = ttk.Label(
@@ -793,17 +797,26 @@ class DSMDiffApp(tk.Tk):
 
     def _build_output(self, parent):
         sec = self._section(parent, "Ausgabe")
-        self._key(sec, "DIFF-COG (.tif):", 0)
+        self._key(sec, "Auflösung DIFF (GSD):", 0)
+        self.gsd_var = tk.StringVar(value=DEFAULT_OUT_GSD)
+        ttk.Combobox(sec, textvariable=self.gsd_var, values=list(OUT_GSD_CHOICES),
+                     state="readonly", width=8).grid(row=0, column=1, sticky="w", padx=(8, 0), pady=3)
+        self.gsd_var.trace_add("write", lambda *_: self._on_gsd_change())
+        self._hint(sec, "Standard 1 m: dh wird im Gitter von DSM aktuell gerechnet und danach "
+                        "flächengewichtet gemittelt (Gitter auf ganze Meter LV95).\n"
+                        "0.5 m: Gitter von DSM aktuell ohne Mitteln. Feiner als DSM aktuell "
+                        "geht nicht.", 1)
+        self._key(sec, "DIFF-COG (.tif):", 2)
         self.out_var = tk.StringVar()
-        self._path_row(sec, 0, self.out_var, "Datei…", self._browse_out)
-        self._hint(sec, "Vorschlag <JAHR>_<AREA>_DSM-DIFF_<GSD>cm_LV95.tif im Ordner von DSM aktuell "
-                        "– der STAC-Asset-Name ist davon unabhängig.", 1)
-        self._key(sec, "Mosaik swissSURFACE3D:", 2)
+        self._path_row(sec, 2, self.out_var, "Datei…", self._browse_out)
+        self._hint(sec, "Vorschlag <JAHR>_<AREA>_DSM-DIFF_<GSD>cm_LV95.tif (GSD des DIFF) im Ordner "
+                        "von DSM aktuell – der STAC-Asset-Name ist davon unabhängig.", 3)
+        self._key(sec, "Mosaik swissSURFACE3D:", 4)
         self.mosaic_lbl = ttk.Label(sec, text="–", font=("Courier New", 8))
-        self.mosaic_lbl.grid(row=2, column=1, columnspan=2, sticky="w", padx=(8, 0))
+        self.mosaic_lbl.grid(row=4, column=1, columnspan=2, sticky="w", padx=(8, 0))
         self._dim_labels.append(self.mosaic_lbl)
         self._hint(sec, "Gleichnamige Dateien werden ersetzt – erst nach bestandener Prüfung;\n"
-                        "schlägt der Lauf fehl, bleibt die alte Datei unverändert.", 3)
+                        "schlägt der Lauf fehl, bleibt die alte Datei unverändert.", 5)
 
     def _build_stac(self, parent, cfg):
         sec = self._section(parent, "STAC-Import")
@@ -839,7 +852,7 @@ class DSMDiffApp(tk.Tk):
         # eigene Zeile, damit das Feld 'Ausgabe' reine Ausgabe bleibt
         ttk.Separator(sec, orient="horizontal").grid(row=7, column=0, columnspan=3, sticky="ew",
                                                      pady=(10, 6))
-        self._key(sec, "Vorhandenes DIFF-COG:", 8)
+        self._key(sec, "Nur DIFF-COG STAC-Import\n(ohne DIFF-Generierung):", 8)
         self.import_diff_var = tk.StringVar()
         self._path_row(sec, 8, self.import_diff_var, "Datei…", self._browse_import_diff)
         entry = sec.grid_slaves(row=8, column=1)[0]
@@ -894,14 +907,24 @@ class DSMDiffApp(tk.Tk):
         if self._ask_tif(self.alt_var, "DSM alt auswählen"):
             self._refresh_alt_info()
 
+    def _out_gsd(self):
+        return OUT_GSD_CHOICES.get(self.gsd_var.get(), OUT_GSD_CHOICES[DEFAULT_OUT_GSD])
+
     def _suggested_out_name(self):
-        """Vorschlag <JAHR>_<AREA>_DSM-DIFF_<GSD>cm_LV95.tif aus den Feldern (STAC-Link: GSD
-        aus den Metadaten)."""
+        """Vorschlag <JAHR>_<AREA>_DSM-DIFF_<GSD>cm_LV95.tif aus den Feldern, GSD = Auflösung
+        des DIFF."""
         jahr, area = self.jahr_var.get().strip(), self.area_var.get().strip()
-        gsd = getattr(self, "_neu_gsd_m", None)
-        if jahr and area and gsd:
-            return diff_filename(jahr, area, round(float(gsd) * 100))
+        if jahr and area:
+            return diff_filename(jahr, area, round(self._out_gsd() * 100))
         return ""
+
+    def _on_gsd_change(self):
+        """Ein vorgeschlagener Ausgabename folgt der GSD - ein von Hand gewaehlter bleibt."""
+        out = self.out_var.get().strip()
+        name = self._suggested_out_name()
+        if out and out == self._out_auto and name:
+            self._out_auto = os.path.join(os.path.dirname(out), name)
+            self.out_var.set(self._out_auto)
 
     def _browse_out(self):
         cur = self.out_var.get().strip()
@@ -920,7 +943,8 @@ class DSMDiffApp(tk.Tk):
             self.out_var.set(normalize_tif_path(path.replace("/", "\\")))
 
     def _browse_import_diff(self):
-        if self._ask_tif(self.import_diff_var, "Vorhandenes DIFF-COG für den STAC-Import auswählen"):
+        if self._ask_tif(self.import_diff_var,
+                         "DIFF-COG für den STAC-Import (ohne DIFF-Generierung) auswählen"):
             self._refresh_import_diff_info()
 
     def _refresh_import_diff_info(self):
@@ -953,7 +977,7 @@ class DSMDiffApp(tk.Tk):
             added, _ = self.lineid_w.add_ids(ids)
             filled.append(f"{len(added)} LineID(s)")
         if md.get("DSMDIFF_SOURCE_OLD_TYPE") == "file":
-            self.alt_mode_var.set(ALT_FILE)          # TerrainModel 2 kommt dann aus dem GUI
+            self.alt_mode_var.set(ALT_FILE)          # DigitalSurfaceModel 2 kommt dann aus dem GUI
             self._on_alt_change()
         # erst nach dem Umschalten, sonst ersetzt der Default je Quelle den Wert aus dem DIFF
         if md.get("DSMDIFF_SIGMA_NEW") and md.get("DSMDIFF_SIGMA_OLD"):
@@ -1003,8 +1027,8 @@ class DSMDiffApp(tk.Tk):
         out = self.out_var.get().strip()
         if path and (not out or out == self._out_auto):
             folder = os.path.dirname(path)
-            name = (diff_filename(parsed["jahr"], parsed["area"], parsed["gsd_cm"]) if parsed
-                    else f"{Path(path).stem}_DSM-DIFF.tif")
+            name = (diff_filename(parsed["jahr"], parsed["area"], round(self._out_gsd() * 100))
+                    if parsed else f"{Path(path).stem}_DSM-DIFF.tif")
             self._out_auto = os.path.join(folder, name)
             self.out_var.set(self._out_auto)
         self._refresh_info(self.neu_var, self.neu_info_lbl, self.neu_problem_lbl)
@@ -1042,7 +1066,7 @@ class DSMDiffApp(tk.Tk):
             self._log(f"Vorbelegt aus STAC ({st.get('asset')}): {', '.join(filled)}\n")
 
     def _apply_stac_alt(self, st):
-        """TerrainModel 2 und dessen Jahr aus den STAC-Metadaten von DSM alt (nur ein Wert der
+        """DigitalSurfaceModel 2 und dessen Jahr aus den STAC-Metadaten von DSM alt (nur ein Wert der
         Auswahlliste, z.B. nicht das '<JAHR>-...' aus der Beschreibung eines DIFF)."""
         if st.get("terrain_model") in stac_import.TERRAIN_MODELS:
             self.tm2_var.set(st["terrain_model"])
@@ -1097,7 +1121,7 @@ class DSMDiffApp(tk.Tk):
         return (self.neu_var.get().strip().strip('"'), year)
 
     def _tm_preview(self):
-        """TerrainModel 1/2 wie im Lauf (_osgeo_runner._terrain_models): '<JAHR>-<Kurzname>',
+        """DigitalSurfaceModel 1/2 wie im Lauf (_osgeo_runner._terrain_models): '<JAHR>-<Kurzname>',
         bei einem STAC-Link mit dessen Asset-Namen."""
         neu = self.neu_var.get().strip().strip('"')
         tm1 = stac_import.terrain_model_label(self.tm1_var.get(), [self._acq_year()[0] or "<JAHR>"],
@@ -1387,7 +1411,7 @@ class DSMDiffApp(tk.Tk):
         if import_only:
             diff = normalize_tif_path(self.import_diff_var.get())
             if not diff or not os.path.isfile(diff):
-                errors.append(f"Vorhandenes DIFF-COG (Abschnitt STAC-Import) nicht gefunden:\n  "
+                errors.append(f"Nur DIFF-COG STAC-Import: DIFF-COG nicht gefunden:\n  "
                               f"{diff or '(leer)'}")
         else:
             neu = self.neu_var.get().strip().strip('"')
@@ -1396,9 +1420,9 @@ class DSMDiffApp(tk.Tk):
             if self.alt_mode_var.get() == ALT_FILE:
                 self._validate_input(errors, "DSM alt (eigenes DSM)", alt)
                 if stac_on and not self.tm2_var.get().strip():
-                    errors.append("TerrainModel 2 fehlt.")
+                    errors.append("DigitalSurfaceModel 2 fehlt.")
                 if stac_on and not re.fullmatch(r"(19|20)\d{2}", self.tm2_year_var.get().strip()):
-                    errors.append("TerrainModel 2: Jahr fehlt oder ungültig (steht als "
+                    errors.append("DigitalSurfaceModel 2: Jahr fehlt oder ungültig (steht als "
                                   "'<JAHR>-…' in der STAC-Beschreibung).")
             elif not self._acq_year()[0]:
                 errors.append("Aufnahmejahr fehlt (LineIDs oder Feld Jahr) – es bestimmt das "
@@ -1420,6 +1444,11 @@ class DSMDiffApp(tk.Tk):
                     errors.append("Das swissSURFACE3D-Mosaik darf keine Eingabe überschreiben.")
             if not self._staging_dir:
                 errors.append("Staging-Ordner fehlt.")
+            # GSD von DSM aktuell aus Dateiname oder STAC (sonst prueft erst der Lauf)
+            gsd_neu = getattr(self, "_neu_gsd_m", None)
+            if gsd_neu and self._out_gsd() < gsd_neu - 0.001:
+                errors.append(f"Auflösung DIFF {self._out_gsd():g} m ist feiner als DSM aktuell "
+                              f"({gsd_neu:g} m) – gröber wählen.")
 
         # Steht immer in den DIFF-Metadaten, nicht nur in der STAC-Beschreibung
         for role, var in (("DSM aktuell", self.sigma_neu_var), ("DSM alt", self.sigma_alt_var)):
@@ -1442,10 +1471,12 @@ class DSMDiffApp(tk.Tk):
 
     @staticmethod
     def _validate_input(errors, role, path):
-        """Lokale Datei (.tif vorhanden) oder STAC-Link (Form: Host INT/PROD, .tif-Asset)."""
+        """Lokale Datei (.tif vorhanden) oder STAC-Link (Form: Host INT/PROD, .tif-Asset),
+        kein DTM im Namen."""
         if not path:
             errors.append(f"{role} fehlt.")
-        elif stac_import.is_url(path):
+            return
+        if stac_import.is_url(path):
             try:
                 stac_import.parse_asset_href(path)
             except ValueError as e:
@@ -1454,6 +1485,10 @@ class DSMDiffApp(tk.Tk):
             errors.append(f"{role} nicht gefunden:\n  {path}")
         elif not path.lower().endswith((".tif", ".tiff")):
             errors.append(f"{role}: GeoTIFF/COG (.tif) erwartet.")
+        try:
+            stac_import.check_not_dtm(path, role)
+        except ValueError as e:
+            errors.append(str(e))
 
     def _show_errors(self, errors):
         if not errors:
@@ -1501,6 +1536,7 @@ class DSMDiffApp(tk.Tk):
             "staging_dir": self._staging_dir,
             "keep_staging": bool(self.keep_staging_var.get()),
             "block_size": 2048,
+            "out_gsd": self._out_gsd(),
             "meta": self._meta_cfg(),
             "stac": self._stac_cfg(self.stac_var.get()),
         }
@@ -1661,7 +1697,7 @@ class DSMDiffApp(tk.Tk):
             messagebox.showwarning("STAC-Import fehlgeschlagen",
                                    "Das DIFF ist fertig und geprüft, der STAC-Import ist aber "
                                    f"fehlgeschlagen:\n\n{detail}\n\nDas DIFF steht unter "
-                                   "STAC-Import → 'Vorhandenes DIFF-COG' bereit; Import dort mit "
+                                   "STAC-Import → 'Nur DIFF-COG STAC-Import' bereit; Import dort mit "
                                    "'Nur STAC-Import dieses DIFF' nachholen.", parent=self)
         else:
             self._log(f"\n✗  {vorgang} fehlgeschlagen.\n")

@@ -30,7 +30,13 @@ Fachlicher Hintergrund, Ablauf und Konventionen: `README.md` im Projektordner.
 - Collection `ch.swisstopo.spezialbefliegungen`, Item `<auftragstyp>-<StacItemIdDatetime>`
   (Logik `_line_ids.stac_datetime`), Asset `<item>-dsm-diff.tif` klein, Titel `DSM-DIFF`.
 - Beschreibung als Text in einer Funktion (`stac_import.build_description`), Muster der GDWH-Assets,
-  Schlüssel `TerrainModel 1` / `TerrainModel 2`. Test gegen das echte DSM-RASTER-Asset.
+  Schlüssel `DigitalSurfaceModel 1` / `DigitalSurfaceModel 2` (`DIFF_MODEL_KEY`, Entscheid Nutzer
+  2026-10-27, vorher `TerrainModel 1/2` – beim Lesen weiter erkannt; ein einzelnes Modell bleibt
+  `TerrainModel:` wie beim GDWH). Test gegen das echte DSM-RASTER-Asset.
+  **Nie ein DTM** (Entscheid Nutzer 2026-10-27): Auswahl `TERRAIN_MODELS` nur photogrammetrisches
+  DSM und swissSURFACE3D, ohne swissALTI3D und swissALTI3D/DHM25 der GDWH-Liste. Leichte Sperre
+  `stac_import.check_not_dtm`: Name der Eingabe (Datei- bzw. Asset-Name) mit `DTM` (eigenes Wort)
+  oder `swissALTI` -> Abbruch in `dsm_diff._check_paths` und Fehler in der GUI-Validierung.
   `Unit: metre` nach SourceReferenceSystem, fest im Code (`ASSET_UNIT`, kein GUI-Feld, Entscheid Nutzer).
   Danach `VerticalAccuracy: <σ_dh> (1 sigma; LoD95 <1.96·σ_dh>)` (Wunsch Vorgesetzter, Entscheid
   Nutzer 2026-10-26, `stac_import.vertical_accuracy`): GUI-Feld je DSM, Default = offizielle
@@ -62,7 +68,7 @@ Fachlicher Hintergrund, Ablauf und Konventionen: `README.md` im Projektordner.
   Assets auf INT/PROD). Ein Link wird ins Staging geladen (`<staging>/stac_asset_cache/`, Prüfsumme
   gegen `checksum:multihash`), nicht per `/vsicurl/` gestreamt (Proxy/Kerberos).
 - Bei einem Link belegt das GUI aus den STAC-Metadaten vor: Area, CameraSystem, LineIDs, Jahr
-  (DSM aktuell) bzw. TerrainModel 2 + Jahr (DSM alt). Den Auftragstyp ändern die DSM-Eingaben nie
+  (DSM aktuell) bzw. DigitalSurfaceModel 2 + Jahr (DSM alt). Den Auftragstyp ändern die DSM-Eingaben nie
   (Entscheid Nutzer: bleibt `ram`, auch bei einem `kry`-Item); nur „Nur STAC-Import“ übernimmt ihn
   aus den `DSMDIFF_*`-Metadaten des DIFF.
 - swissSURFACE3D: Jahr je Kachel = jüngstes **vor** dem Aufnahmejahr, feste Regel (die Option
@@ -76,8 +82,14 @@ Fachlicher Hintergrund, Ablauf und Konventionen: `README.md` im Projektordner.
 ## Raster-Regeln
 - NoData `-3.4028234663852886e+38` (−FLT_MAX) im Diff und im swissSURFACE3D-Mosaik (Kacheln
   liefern −9999 → wird umgesetzt), bitgenau zurücklesen.
-- Referenzgitter = DSM aktuell. Resampling nur bei anderem Gitter: bilinear (gröber/versetzt),
+- Rechengitter = DSM aktuell. Resampling nur bei anderem Gitter: bilinear (gröber/versetzt),
   average (feiner), immer mit Warnung.
+- Ausgabe-GSD (Wunsch Vorgesetzter 2026-10-27): GUI-Dropdown `1 m` (Default) / `0.5 m`; Kernfunktion
+  und CLI `out_gsd=None` = Gitter DSM aktuell. Gröber → erst dh im Gitter von DSM aktuell, dann
+  `aggregate_to_gsd` (gdal.Warp average, Gitter auf Vielfache der GSD in LV95), Statistik danach neu.
+  Feiner als DSM aktuell → Abbruch. `eo:gsd` = Ausgabe-GSD; der GSD-Vergleich mit dem DSM-RASTER
+  nimmt weiter DSM aktuell (`source_gsd`, `DSMDIFF_GSD_NEW`). VerticalAccuracy bleibt je Zelle
+  unverändert (Fehler räumlich korreliert, Mitteln verkleinert σ kaum).
 - `gdal.Warp` immer mit `srcSRS="EPSG:2056"` **und** `dstSRS="EPSG:2056"` (sonst Höhentransformation
   zwischen Compound-CRS). Nie still umprojizieren; horizontal nicht LV95 → Abbruch.
 - CRS-Tag Diff nur `EPSG:2056`; Mosaik `EPSG:2056+5728`.

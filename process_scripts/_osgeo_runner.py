@@ -161,7 +161,7 @@ def _s3d_search(cfg):
 
 
 def _terrain_models(meta, line_ids, camera, alt_quelle, s3d_years, neu_link=None, alt_link=None):
-    """TerrainModel 1/2 der Asset-Beschreibung. Jahr TerrainModel 1 = Jahr der ersten LineID,
+    """DigitalSurfaceModel 1/2 der Asset-Beschreibung. Jahr Modell 1 = Jahr der ersten LineID,
     ein STAC-Link wird mit seinem Asset-Namen genannt (stac_import.terrain_model_label)."""
     import stac_import
     year = stac_import.acquisition_times(line_ids, camera)[0][:4]
@@ -280,16 +280,19 @@ def _dsm_diff(cfg):
         staging_dir=cfg.get("staging_dir"), overwrite=bool(cfg.get("overwrite", True)),
         block_size=int(cfg.get("block_size", 2048)), progress=progress, cancel=cancel,
         ref_year=cfg.get("ref_year"), mosaic_out=cfg.get("mosaic_out"), session=session,
-        keep_staging=bool(cfg.get("keep_staging")), metadata=extra, pre_check=pre_check)
+        keep_staging=bool(cfg.get("keep_staging")), metadata=extra, pre_check=pre_check,
+        out_gsd=cfg.get("out_gsd"))
 
     imported = None
     if import_on:
         try:
+            # eo:gsd = Zelle des Diff; mit dem DSM-RASTER verglichen wird DSM aktuell
             imported = stac_import.run_stac_import(
                 result["out"], env, item, state["description"], result["gsd"], line_ids,
                 camera, area, bounds_lv95=result["bounds"], secrets_dir=secrets_dir,
                 replace_existing=bool(stac.get("replace_existing")), cancel=cancel,
-                progress=upload_progress, session=session, auth=auth)
+                progress=upload_progress, session=session, auth=auth,
+                source_gsd=result["gsd_neu"])
         except Exception as e:      # inkl. InterruptedError (Abbruch waehrend des Uploads)
             what = "abgebrochen" if isinstance(e, InterruptedError) else "fehlgeschlagen"
             logger.error(f"STAC-Import {what}: {e}\n"
@@ -302,7 +305,7 @@ def _dsm_diff(cfg):
 
 
 def _stac_import(cfg):
-    """Import eines vorhandenen DIFF. TerrainModel 2 (Jahre) kommt aus dessen Metadaten."""
+    """Import eines vorhandenen DIFF. DigitalSurfaceModel 2 (Jahre) kommt aus dessen Metadaten."""
     import struct
     from osgeo import gdal
     import dsm_diff
@@ -363,10 +366,12 @@ def _stac_import(cfg):
                               old if alt_quelle == "datei" and stac_import.is_url(old) else None),
         camera, line_ids, meta.get("commentary") or stac_import.DEFAULT_COMMENTARY,
         accuracy=accuracy)
+    # Aeltere DIFF ohne DSMDIFF_GSD_NEW liegen im Gitter von DSM aktuell
     res = stac_import.run_stac_import(
         path, env, item, description, gsd, line_ids, camera, area, bounds_lv95=bounds,
         secrets_dir=stac.get("secrets_dir"), replace_existing=bool(stac.get("replace_existing")),
-        cancel=_cancel_from(cfg), progress=_fraction_progress(_progress_printer()))
+        cancel=_cancel_from(cfg), progress=_fraction_progress(_progress_printer()),
+        source_gsd=float(md.get("DSMDIFF_GSD_NEW") or gsd))
     logger.info(f"\nFertig: {res['asset']} in {env}"
                 + ("  (Item neu angelegt)" if res.get("item_created") else "")
                 + f"\n  {res['browser_link']}")
@@ -379,6 +384,8 @@ def _summary(result, imported):
              f"DIFF       : {result['out']}",
              f"Quelle alt : {result['alt_desc']}",
              f"Resampling : {result['resampling']}",
+             f"GSD        : {result['gsd']:g} m"
+             + (f" (gemittelt aus {result['gsd_neu']:g} m)" if result.get("aggregated") else ""),
              f"dh gueltig : {s['valid_percent']:.2f} % der Pixel, ohne Referenz "
              f"{s['no_reference_percent']:.2f} % der Flaeche von DSM aktuell"]
     if result.get("mosaic"):

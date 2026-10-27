@@ -57,10 +57,15 @@ AUFTRAGSTYPEN = {
     "wam": "Wald Monitoring",
 }
 DEFAULT_AUFTRAGSTYP = "ram"
+# ohne die DTM swissALTI3D und swissALTI3D/DHM25 der GDWH-Liste: das DSM-DIFF nie mit einem
+# DTM (Entscheid Nutzer 2026-10-27)
 TERRAIN_MODELS = [
     "Digital Surface Model (DSM photogrammetric autocorrelation)",
-    "swissALTI3D", "swissALTI3D/DHM25", "swissSURFACE3D",
+    "swissSURFACE3D",
 ]
+# Leichte DTM-Sperre ueber den Namen der Eingabe: 'DTM' als eigenes Wort (nicht in z.B.
+# STADTMITTE) oder 'swissALTI', Gross-/Kleinschreibung egal
+_DTM_NAME = re.compile(r"(?<![a-z])dtm(?![a-z])|swissalti", re.IGNORECASE)
 CAMERA_SYSTEMS = ["Leica ADS100", "Leica ADS80", "Leica DMC-4"]
 DEFAULT_CAMERA = _line_ids.DMC_CAMERA
 # Nur Werte aus dem GDWH-Wertebereich (siehe GUI_GDWHimport.SOURCE_REF_SYS)
@@ -70,8 +75,11 @@ TERRAIN_MODEL_S3D = "swissSURFACE3D"
 # Kurznamen in der DIFF-Beschreibung, '<JAHR>-<Kurzname>' (Entscheid Nutzer 2026-10-20)
 TERRAIN_MODEL_SHORT = {TERRAIN_MODEL_1_DEFAULT: "DSM-photogrammetric",
                        TERRAIN_MODEL_S3D: "swissSURFACE3D-DSM"}
+# Schluessel der beiden Modelle in der DIFF-Beschreibung (Entscheid Nutzer 2026-10-27,
+# vorher 'TerrainModel 1/2'); ein einzelnes Modell bleibt 'TerrainModel' wie beim GDWH
+DIFF_MODEL_KEY = "DigitalSurfaceModel"
 DEFAULT_COMMENTARY = ("Digital Surface Model - Difference "
-                      "(TerrainModel 1 minus TerrainModel 2, negative = loss)")
+                      f"({DIFF_MODEL_KEY} 1 minus {DIFF_MODEL_KEY} 2, negative = loss)")
 
 
 # ─── Teil 1: Namen und Beschreibung (Standardbibliothek) ──────────────────────
@@ -148,7 +156,7 @@ def acquisition_times(line_ids, camera):
 
 
 def terrain_model_label(model, years=None, link=None):
-    """TerrainModel 1/2 der DIFF-Beschreibung: '<JAHR>-<Kurzname>', mehrere Jahre mit '/',
+    """DigitalSurfaceModel 1/2 der DIFF-Beschreibung: '<JAHR>-<Kurzname>', mehrere Jahre mit '/',
     ein STAC-Link mit seinem Asset-Namen (Entscheid Nutzer: reicht zum Nachvollziehen); ein
     lokaler Pfad wird nicht genannt. Z.B. '2021/2023-swissSURFACE3D-DSM',
     '2026-DSM-photogrammetric (kry-2026-08-13t08222100-dsm-raster.tif)'."""
@@ -159,6 +167,16 @@ def terrain_model_label(model, years=None, link=None):
     ys = sorted({str(y).strip() for y in (years or []) if str(y).strip()})
     label = f"{'/'.join(ys)}-{name}" if ys else name
     return f"{label} ({parse_asset_href(link)['asset']})" if link else label
+
+
+def check_not_dtm(path, role):
+    """Das DSM-DIFF nie mit einem DTM (Entscheid Nutzer 2026-10-27). Pruefbar ist nur der
+    Dateiname bzw. bei einem STAC-Link der Asset-Name (letzter Teil); der Ordner zaehlt
+    nicht. ValueError, wenn er 'DTM' oder 'swissALTI' enthaelt."""
+    name = re.split(r"[\\/]", str(path or "").strip().strip('"').rstrip("/\\"))[-1]
+    if _DTM_NAME.search(name):
+        raise ValueError(f"{role}: der Name {name} deutet auf ein DTM ('DTM' oder 'swissALTI') "
+                         f"- das DSM-DIFF wird nie mit einem DTM gerechnet.")
 
 
 def parse_sigma(text):
@@ -201,10 +219,10 @@ def build_description(area, terrain_models, camera, line_ids, commentary,
                       source_ref_sys=SOURCE_REF_SYS, unit=ASSET_UNIT, accuracy=None):
     """Asset-Beschreibung als Text im Muster der GDWH-Assets (kein JSON).
 
-    Reihenfolge und Schreibweise wie beim DSM-RASTER-Asset. Ein Terrainmodell ergibt
+    Reihenfolge und Schreibweise wie beim DSM-RASTER-Asset. Ein Modell ergibt
     'TerrainModel: ...' (so baut der GDWH die bestehenden Assets), zwei ergeben
-    'TerrainModel 1: ..., TerrainModel 2: ...' (Entscheid 3). Acquisition time und LineId
-    sortiert, kommagetrennt ohne Leerzeichen. 'Unit: metre' und 'VerticalAccuracy: ...'
+    'DigitalSurfaceModel 1: ..., DigitalSurfaceModel 2: ...' (DIFF_MODEL_KEY). Acquisition
+    time und LineId sortiert, kommagetrennt ohne Leerzeichen. 'Unit: metre' und 'VerticalAccuracy: ...'
     (vertical_accuracy) nach SourceReferenceSystem gibt es nur im DIFF (unit=None,
     accuracy=None ergibt das reine GDWH-Muster)."""
     if isinstance(terrain_models, str):
@@ -218,7 +236,7 @@ def build_description(area, terrain_models, camera, line_ids, commentary,
     if len(terrain_models) == 1:
         parts.append(f"TerrainModel: {terrain_models[0]}")
     else:
-        parts += [f"TerrainModel {i}: {t}" for i, t in enumerate(terrain_models, 1)]
+        parts += [f"{DIFF_MODEL_KEY} {i}: {t}" for i, t in enumerate(terrain_models, 1)]
     parts.append(f"SourceReferenceSystem: {source_ref_sys}")
     if unit:
         parts.append(f"Unit: {unit}")
@@ -249,8 +267,10 @@ _API_HREF = re.compile(r"^https?://(?P<host>[^/]+)/api/stac/v0\.9/collections/(?
                        r"/items/(?P<item>[^/]+)/assets/(?P<asset>[^/?#]+)/?$", re.IGNORECASE)
 _DATA_HREF = re.compile(r"^https?://(?P<host>[^/]+)/(?P<collection>[^/]+)/(?P<item>[^/]+)"
                         r"/(?P<asset>[^/?#]+)$", re.IGNORECASE)
-# Schluessel der GDWH-Asset-Beschreibung (laengere zuerst: 'TerrainModel 1' vor 'TerrainModel')
-DESCRIPTION_KEYS = ("Area", "TerrainModel 1", "TerrainModel 2", "TerrainModel",
+# Schluessel der GDWH-Asset-Beschreibung (laengere zuerst: 'TerrainModel 1' vor 'TerrainModel';
+# 'TerrainModel 1/2' fuer DIFF-Assets, die vor 2026-10-27 importiert wurden)
+DESCRIPTION_KEYS = ("Area", f"{DIFF_MODEL_KEY} 1", f"{DIFF_MODEL_KEY} 2",
+                    "TerrainModel 1", "TerrainModel 2", "TerrainModel",
                     "SourceReferenceSystem", "Unit", "VerticalAccuracy", "CameraSystem",
                     "Acquisition time", "LineId", "Commentary")
 _DESC_KEY_PATTERN = re.compile(r"(?:^|, )(" + "|".join(re.escape(k) for k in DESCRIPTION_KEYS)
@@ -326,7 +346,8 @@ def asset_summary(ref, asset):
             "checksum": asset.get("checksum:multihash", ""), "gsd": asset.get("eo:gsd"),
             "epsg": asset.get("proj:epsg"), "title": asset.get("title"), "description": desc,
             "area": f.get("Area"), "camera": f.get("CameraSystem"), "line_ids": line_ids,
-            "terrain_model": f.get("TerrainModel") or f.get("TerrainModel 1"),
+            "terrain_model": (f.get("TerrainModel") or f.get(f"{DIFF_MODEL_KEY} 1")
+                              or f.get("TerrainModel 1")),
             "source_ref_sys": f.get("SourceReferenceSystem"),
             "height_ref": height_ref_from_source_ref_sys(f.get("SourceReferenceSystem")),
             "auftragstyp": auftragstyp_from_item(ref["item"]), "year": year}
@@ -544,9 +565,12 @@ def verify_asset(session, env, item, asset, checksum, attempts=5, wait_s=3):
 
 def run_stac_import(diff_path, env, item, description, gsd, line_ids, camera, area,
                     bounds_lv95=None, secrets_dir=None, replace_existing=False, cancel=None,
-                    progress=None, session=None, upload_sessions=None, auth=None):
+                    progress=None, session=None, upload_sessions=None, auth=None,
+                    source_gsd=None):
     """Item anlegen, falls es fehlt; Asset <item>-dsm-diff.tif anlegen, Datei hochladen,
     kontrollieren. bounds_lv95 = Perimeter von DSM aktuell (Geometrie eines neuen Items).
+    gsd = Zelle des Diff (eo:gsd); source_gsd = Zelle von DSM aktuell fuer den Vergleich mit
+    dem DSM-RASTER (Default gsd - bei einem auf 1 m gemittelten Diff sonst falsche Warnung).
 
     session / upload_sessions / auth werden normalerweise hier erzeugt (Credentials aus
     secrets_dir, Proxy wie rapidmapping) - die Tests geben Attrappen mit."""
@@ -574,7 +598,8 @@ def run_stac_import(diff_path, env, item, description, gsd, line_ids, camera, ar
             upload_sessions = _stac_http.make_upload_sessions(_stac_http.get_proxy_config())
     from _stac_http import multipart_upload
 
-    check = check_item(session, env, item, line_ids, camera, area, gsd, replace_existing)
+    cmp_gsd = gsd if source_gsd is None else source_gsd
+    check = check_item(session, env, item, line_ids, camera, area, cmp_gsd, replace_existing)
     item_created = False
     if not check["item_exists"]:
         if bounds_lv95 is None:
@@ -582,7 +607,8 @@ def run_stac_import(diff_path, env, item, description, gsd, line_ids, camera, ar
         payload = item_payload(item, line_ids, camera, lv95_bounds_to_wgs84_polygon(bounds_lv95))
         item_created = create_item(session, env, item, payload, auth)
         if not item_created:                 # inzwischen entstanden: jetzt normal pruefen
-            check = check_item(session, env, item, line_ids, camera, area, gsd, replace_existing)
+            check = check_item(session, env, item, line_ids, camera, area, cmp_gsd,
+                               replace_existing)
 
     try:
         put_asset(session, env, item, asset, asset_payload(asset, gsd, description), auth)

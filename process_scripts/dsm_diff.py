@@ -6,14 +6,20 @@ Kernfunktion run_dsm_diff(...) ohne GUI-Abhaengigkeit, CLI am Dateiende
 fuer swissSURFACE3D zusaetzlich requests (ueber _stac_http).
 
 Methode
-  - Referenzgitter = DSM aktuell: gleiche Ausdehnung, gleiche Geotransformation. So liegt
-    das Diff pixelgenau auf dem DSM-RASTER-Asset desselben STAC-Items.
+  - Rechengitter = DSM aktuell: gleiche Ausdehnung, gleiche Geotransformation. Ohne Mitteln
+    (Ausgabe-GSD = Zelle von DSM aktuell) liegt das Diff pixelgenau auf dem DSM-RASTER-Asset
+    desselben STAC-Items.
   - DSM alt im selben Gitter (gleiche Zellgroesse, Ursprungsversatz ganzzahlig innerhalb
     1e-3 Pixel) wird direkt gelesen. Sonst gdal.Warp auf das Referenzgitter ins Staging:
     bilinear, wenn DSM alt groeber oder nur versetzt ist, average, wenn es feiner ist.
   - Warp immer mit srcSRS = dstSRS = EPSG:2056: bei zwei Compound-CRS (z.B. 2056+5728)
     loest GDAL sonst eine Hoehentransformation ueber PROJ-Grids aus und veraendert die
     Z-Werte still (im DMC-Converter so gemessen).
+  - Ausgabe-GSD (out_gsd, GUI-Standard 1 m): groeber als DSM aktuell -> dh zuerst im Gitter
+    von DSM aktuell, danach gdal.Warp average auf die GSD (ab GDAL 3.1 flaechengewichtet,
+    NoData zaehlt nicht), Gitter auf Vielfache der GSD in LV95. Erst die Differenz, dann
+    mitteln: so stammt jede Zelle nur aus Pixeln, die in beiden DSM gueltig sind. Feiner als
+    DSM aktuell -> Abbruch (keine kuenstliche Aufloesung).
   - NoData, wo eines der beiden DSM NoData/NaN hat - ausgewertet wird das Maskenband,
     nicht nur der NoData-Wert. Gerechnet wird in float64, geschrieben Float32 mit
     NoData -3.4028234663852886e+38 (= -FLT_MAX, wie DSM-RASTER / GDWH SB_DSM).
@@ -51,6 +57,7 @@ logger = logging.getLogger("dsm_diff")
 DIFF_NODATA = -3.4028234663852886e+38          # -FLT_MAX, wie LAS_RASTER_NODATA (DMC)
 GDAL_MIN_VERSION = 3010000                    # COG-Treiber ab GDAL 3.1
 GRID_TOL_PX = 1e-3                            # zulaessiger Ursprungsversatz in Pixel
+GSD_TOL_M = 1e-3                              # Ausgabe-GSD = Zelle von DSM aktuell innerhalb 1 mm
 HUGE_ABS = 1e30                               # |Wert| darueber = ungetaggter Sentinel
 UNIT_OK = {"", "m", "metre", "meter", "metres", "meters"}
 HEIGHT_REF_NAMES = {5728: "LN02", 5729: "LHN95"}
@@ -410,6 +417,19 @@ def _merge_stats(acc, x):
     acc["max"] = max(acc["max"], float(x.max()))
 
 
+def _new_stats():
+    return {"n": 0, "mean": 0.0, "m2": 0.0, "min": math.inf, "max": -math.inf}
+
+
+def _stats_dict(acc, total):
+    n = acc["n"]
+    return {"valid": n, "total": total,
+            "valid_percent": 100.0 * n / total if total else 0.0,
+            "min": acc["min"] if n else None, "max": acc["max"] if n else None,
+            "mean": acc["mean"] if n else None,
+            "std": math.sqrt(acc["m2"] / n) if n else None}
+
+
 def compute_diff(neu, alt, col_off, row_off, out_path, block_size=2048, cancel=None,
                  progress=None, lo=0.0, hi=100.0, alt_sentinel=None):
     """dh = neu - alt blockweise ins Gitter von DSM aktuell (Float32, NoData -FLT_MAX).
@@ -430,7 +450,7 @@ def compute_diff(neu, alt, col_off, row_off, out_path, block_size=2048, cancel=N
     a_all_valid = bool(ab.GetMaskFlags() & gdal.GMF_ALL_VALID)
     AW, AH = ads.RasterXSize, ads.RasterYSize
 
-    acc = {"n": 0, "mean": 0.0, "m2": 0.0, "min": math.inf, "max": -math.inf}
+    acc = _new_stats()
     n_neu_valid = n_no_ref = n_huge = n_sentinel = 0
     bs = max(1, int(block_size))
     n_blocks = math.ceil(W / bs) * math.ceil(H / bs)
@@ -477,18 +497,51 @@ def compute_diff(neu, alt, col_off, row_off, out_path, block_size=2048, cancel=N
     if n_sentinel:
         raise RuntimeError(f"DSM alt enthaelt {n_sentinel} Pixel mit dem Wert {alt_sentinel:g}, "
                            f"die als gueltig gelten - NoData der Kacheln wurde nicht umgesetzt.")
-    total = W * H
-    stats = {
-        "valid": acc["n"], "total": total,
-        "valid_percent": 100.0 * acc["n"] / total if total else 0.0,
-        "min": acc["min"] if acc["n"] else None, "max": acc["max"] if acc["n"] else None,
-        "mean": acc["mean"] if acc["n"] else None,
-        "std": math.sqrt(acc["m2"] / acc["n"]) if acc["n"] else None,
-        "neu_valid": n_neu_valid, "no_reference": n_no_ref,
-        "no_reference_percent": 100.0 * n_no_ref / n_neu_valid if n_neu_valid else 0.0,
-        "huge_values_masked": n_huge,
-    }
-    return stats
+    return dict(_stats_dict(acc, W * H), neu_valid=n_neu_valid, no_reference=n_no_ref,
+                no_reference_percent=100.0 * n_no_ref / n_neu_valid if n_neu_valid else 0.0,
+                huge_values_masked=n_huge)
+
+
+def aggregate_to_gsd(src_path, bounds, gsd, dst_path, cancel=None, progress=None, lo=0.0,
+                     hi=100.0):
+    """dh auf eine groebere GSD mitteln: gdal.Warp average (ab GDAL 3.1 flaechengewichtet,
+    NoData-Pixel zaehlen nicht, Zelle ohne gueltiges Pixel = NoData). Gitter auf Vielfache
+    der GSD in LV95, Ausdehnung nach aussen gerundet. -> {'width', 'height', 'gt', 'gsd'}."""
+    minx, miny, maxx, maxy = s3d.snapped_bounds(bounds, gsd)
+    opts = gdal.WarpOptions(
+        format="GTiff", outputBounds=(minx, miny, maxx, maxy), xRes=gsd, yRes=gsd,
+        srcSRS="EPSG:2056", dstSRS="EPSG:2056",
+        resampleAlg="average", outputType=gdal.GDT_Float32, dstNodata=DIFF_NODATA,
+        multithread=True, warpOptions=["NUM_THREADS=ALL_CPUS"],
+        creationOptions=STAGING_OPTIONS,
+        callback=_gdal_callback(progress, cancel, lo, hi, f"Mitteln auf {gsd:g} m"))
+    out = _run_gdal(cancel, "Mitteln", gdal.Warp, str(dst_path), str(src_path), options=opts)
+    if out is None:
+        raise RuntimeError("gdal.Warp hat None zurueckgegeben (Mitteln auf die Ausgabe-GSD)")
+    out.FlushCache()
+    grid = {"width": out.RasterXSize, "height": out.RasterYSize,
+            "gt": tuple(out.GetGeoTransform()), "gsd": float(gsd)}
+    out = None
+    return grid
+
+
+def raster_stats(path, block_size=2048, cancel=None):
+    """Statistik eines Float32-Rasters blockweise (NoData/Maske zaehlt nicht)."""
+    ds = gdal.Open(str(path), gdal.GA_ReadOnly)
+    b = ds.GetRasterBand(1)
+    W, H = ds.RasterXSize, ds.RasterYSize
+    acc = _new_stats()
+    bs = max(1, int(block_size))
+    try:
+        for yoff in range(0, H, bs):
+            for xoff in range(0, W, bs):
+                _check_cancel(cancel, "Statistik")
+                d, v, _ = _read_block(b, xoff, yoff, min(bs, W - xoff), min(bs, H - yoff),
+                                      1.0, 0.0, False)
+                _merge_stats(acc, d[v])
+    finally:
+        b = ds = None
+    return _stats_dict(acc, W * H)
 
 
 def write_cog(src_path, dst_path, cancel=None, progress=None, lo=0.0, hi=100.0,
@@ -592,7 +645,7 @@ def _is_url(path):
 
 def _check_paths(dsm_neu, out, dsm_alt, alt_quelle, mosaic_out, overwrite):
     """Formale Pruefung von Ein- und Ausgaben. Eingaben duerfen STAC-Links sein (Form
-    geprueft hier, Inhalt beim Laden)."""
+    geprueft hier, Inhalt beim Laden). Name mit DTM -> Abbruch (stac_import.check_not_dtm)."""
     import stac_import
     checks = [("DSM aktuell", dsm_neu)] + ([("DSM alt", dsm_alt)] if alt_quelle == ALT_FILE else [])
     for role, p in checks:
@@ -602,6 +655,7 @@ def _check_paths(dsm_neu, out, dsm_alt, alt_quelle, mosaic_out, overwrite):
             stac_import.parse_asset_href(p)
         elif not os.path.isfile(str(p)):
             raise ValueError(f"{role} nicht gefunden: {p}")
+        stac_import.check_not_dtm(p, role)
     outputs = [("DIFF-COG", out)] + ([("Mosaik", mosaic_out)] if mosaic_out else [])
     inputs = [p for p in [dsm_neu] + ([dsm_alt] if alt_quelle == ALT_FILE else [])
               if not _is_url(p)]
@@ -705,7 +759,7 @@ def run_dsm_diff(dsm_neu, out_diff_cog, dsm_alt=None, alt_quelle=ALT_S3D,
                  staging_dir=None, overwrite=False, block_size=2048,
                  progress=None, cancel=None, *, ref_year=None, allow_same_year=False,
                  mosaic_out=None, session=None, s3d_result=None, keep_staging=False,
-                 metadata=None, pre_check=None):
+                 metadata=None, pre_check=None, out_gsd=None):
     """Berechnet dh = DSM aktuell - DSM alt als COG.
 
     dsm_neu / dsm_alt: lokaler Pfad oder STAC-Link (href oder API-URL eines Assets von INT/
@@ -722,9 +776,13 @@ def run_dsm_diff(dsm_neu, out_diff_cog, dsm_alt=None, alt_quelle=ALT_S3D,
     metadata: zusaetzliche TIFF-Metadaten (z.B. LineIDs, Item-ID).
     pre_check(info): wird nach allen Pruefungen und VOR dem Schreiben der Ausgaben
         aufgerufen (z.B. STAC-Item pruefen). info = {'neu': facts, 's3d': suchergebnis | None}.
+    out_gsd: Zellgroesse des Diff in Meter; None = Gitter von DSM aktuell (das GUI gibt
+        1.0 oder 0.5). Groeber -> mitteln (aggregate_to_gsd), feiner -> ValueError.
     Gibt ein dict mit Pfaden, Statistik und Quellenangaben zurueck."""
     if alt_quelle not in (ALT_S3D, ALT_FILE):
         raise ValueError(f"Unbekannte Quelle DSM alt: {alt_quelle!r}")
+    if out_gsd is not None and not float(out_gsd) > 0:
+        raise ValueError(f"Ausgabe-GSD {out_gsd!r} ungueltig")
     if int(block_size) < 1:
         raise ValueError(f"Blockgroesse {block_size} ungueltig")
     check_gdal_version()
@@ -748,6 +806,11 @@ def run_dsm_diff(dsm_neu, out_diff_cog, dsm_alt=None, alt_quelle=ALT_S3D,
     if neu["nodata"] is None:
         logger.warning("DSM aktuell traegt keinen NoData-Tag - alle Pixel gelten als gueltig "
                        "(ausser NaN und interne Maske).")
+    native = max(neu["res_x"], neu["res_y"])
+    if out_gsd is not None and float(out_gsd) < native - GSD_TOL_M:
+        raise ValueError(f"Ausgabe-GSD {float(out_gsd):g} m ist feiner als DSM aktuell "
+                         f"({native:g} m) - das ergaebe keine echte Aufloesung. Abbruch.")
+    aggregate = out_gsd is not None and float(out_gsd) > native + GSD_TOL_M
 
     alt = None
     if alt_quelle == ALT_FILE:
@@ -828,19 +891,38 @@ def run_dsm_diff(dsm_neu, out_diff_cog, dsm_alt=None, alt_quelle=ALT_S3D,
             raise ValueError("Kein Pixel hat in beiden DSM einen Wert - keine Ueberlappung "
                              "der gueltigen Daten.")
 
-        items = _diff_metadata(neu, alt, alt_quelle, alt_desc, rel, s3d_result, stamp, metadata)
+        grid = {"width": neu["width"], "height": neu["height"], "gt": neu["gt"],
+                "gsd": neu["res_x"]}
+        if aggregate:
+            gsd = float(out_gsd)
+            logger.info(f"Mitteln auf {gsd:g} m: gdal.Warp average (flaechengewichtet, NoData "
+                        f"zaehlt nicht), Gitter auf Vielfache von {gsd:g} m in LV95")
+            agg = run_dir / f"dsm_diff_{gsd:g}m.tif"
+            grid = aggregate_to_gsd(staged, neu["bounds"], gsd, agg, cancel, progress, 80, 85)
+            # Statistik im Ausgabegitter neu (Mitteln glaettet min/max/std)
+            stats = result["stats"] = dict(stats, **raster_stats(agg, block_size, cancel))
+            logger.info(f"Statistik dh nach dem Mitteln: {grid['width']} x {grid['height']} "
+                        f"Zellen, gueltig {stats['valid_percent']:.2f} %, min {stats['min']:.3f} m, "
+                        f"max {stats['max']:.3f} m, mittel {stats['mean']:.3f} m, "
+                        f"std {stats['std']:.3f} m")
+            staged = agg
+        grid["aggregated"] = aggregate
+
+        items = _diff_metadata(neu, alt, alt_quelle, alt_desc, rel, s3d_result, stamp, metadata,
+                               grid)
         _set_diff_metadata(staged, items, stats)
         logger.info("COG schreiben (DEFLATE, PREDICTOR=FLOATING_POINT, Bloecke 512, Overviews AVERAGE)")
-        write_cog(staged, tmp_cog, cancel, progress, 80, 97)
-        problems = check_cog(tmp_cog, neu["width"], neu["height"], neu["gt"], vertical=None,
+        write_cog(staged, tmp_cog, cancel, progress, 85 if aggregate else 80, 97)
+        problems = check_cog(tmp_cog, grid["width"], grid["height"], grid["gt"], vertical=None,
                              require_metadata=("DSMDIFF_DEFINITION", "DSMDIFF_SOURCE_NEW",
                                                "DSMDIFF_SOURCE_OLD", "DSMDIFF_CREATED",
-                                               "TIFFTAG_DATETIME"),
+                                               "DSMDIFF_GSD", "TIFFTAG_DATETIME"),
                              require_stats=True)
         if problems:
             raise RuntimeError("COG-Pruefung fehlgeschlagen: " + "; ".join(problems))
-        logger.info("COG-Pruefung OK: Layout COG, DEFLATE, Predictor 3, NoData bitgenau, Gitter "
-                    "= DSM aktuell, EPSG:2056, Einheit metre, Metadaten, keine aux.xml")
+        where = f"GSD {grid['gsd']:g} m" if aggregate else "DSM aktuell"
+        logger.info(f"COG-Pruefung OK: Layout COG, DEFLATE, Predictor 3, NoData bitgenau, Gitter "
+                    f"= {where}, EPSG:2056, Einheit metre, Metadaten, keine aux.xml")
         _check_cancel(cancel, "vor dem Ablegen")
 
         if tmp_mosaic:
@@ -849,7 +931,8 @@ def run_dsm_diff(dsm_neu, out_diff_cog, dsm_alt=None, alt_quelle=ALT_S3D,
         _place(tmp_cog, out_diff_cog)
         if progress:
             progress(100, "fertig")
-        result.update(neu_name=neu["name"], alt_desc=alt_desc, gsd=neu["res_x"], bounds=neu["bounds"],
+        result.update(neu_name=neu["name"], alt_desc=alt_desc, gsd=grid["gsd"],
+                      gsd_neu=neu["res_x"], aggregated=aggregate, bounds=neu["bounds"],
                       height_ref_neu=neu.get("height_ref"), height_ref_alt=alt.get("height_ref"),
                       metadata=items)
         return result
@@ -945,7 +1028,7 @@ def _prepare_swisssurface3d(neu, found, session, staging_dir, run_dir, tmp_mosai
     return alt, desc
 
 
-def _diff_metadata(neu, alt, alt_quelle, alt_desc, rel, found, stamp, extra):
+def _diff_metadata(neu, alt, alt_quelle, alt_desc, rel, found, stamp, extra, grid):
     def ref(f):
         how = {"tag": "CRS tag", "stac": "STAC description", "name": "file name only"}.get(
             f.get("height_ref_source"), "not tagged")
@@ -959,6 +1042,13 @@ def _diff_metadata(neu, alt, alt_quelle, alt_desc, rel, found, stamp, extra):
         "DSMDIFF_HEIGHT_REF_OLD": ref(alt),
         "DSMDIFF_RESAMPLING": ("none (same grid)" if rel["method"] == "none"
                                else f"{rel['method']} ({rel['reason']})"),
+        # GSD_NEW: Zelle von DSM aktuell - 'Nur STAC-Import' vergleicht damit das DSM-RASTER
+        "DSMDIFF_GSD": f"{grid['gsd']:g}",
+        "DSMDIFF_GSD_NEW": f"{neu['res_x']:g}",
+        "DSMDIFF_AGGREGATION": (
+            f"average {neu['res_x']:g} m -> {grid['gsd']:g} m (dh on the grid of DSM new, then "
+            f"area-weighted mean of the valid cells; grid aligned to multiples of "
+            f"{grid['gsd']:g} m in LV95)" if grid.get("aggregated") else "none (grid of DSM new)"),
         "DSMDIFF_CREATED": stamp.isoformat(timespec="seconds"),
         "DSMDIFF_SOFTWARE": f"topo-rmDSMdiff dsm_diff.py, GDAL {gdal.__version__}",
         "TIFFTAG_DATETIME": stamp.strftime("%Y:%m:%d %H:%M:%S"),
@@ -1001,6 +1091,8 @@ def main(argv=None):
                                  "swissSURFACE3D aus dem STAC")
     p.add_argument("--ref-year", type=int, help="Aufnahmejahr (fuer swissSURFACE3D)")
     p.add_argument("--mosaic", help="Ausgabe swissSURFACE3D-Mosaik (.tif)")
+    p.add_argument("--gsd", type=float, help="Zellgroesse des Diff in m, z.B. 1 (Default: "
+                                             "Gitter von DSM aktuell)")
     p.add_argument("--secrets-dir", help="Ordner mit proxy_config.json (Netzzugriff)")
     p.add_argument("--staging", help="Staging-Ordner (Default: Temp)")
     p.add_argument("--keep-staging", action="store_true")
@@ -1016,7 +1108,7 @@ def main(argv=None):
         run_dsm_diff(a.dsm_neu, a.out, dsm_alt=a.alt, alt_quelle=ALT_FILE if a.alt else ALT_S3D,
                      staging_dir=a.staging, overwrite=a.overwrite, block_size=a.block_size,
                      ref_year=a.ref_year, mosaic_out=a.mosaic, session=session,
-                     keep_staging=a.keep_staging)
+                     keep_staging=a.keep_staging, out_gsd=a.gsd)
     except Exception as e:
         logger.error(str(e))
         return 1

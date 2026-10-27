@@ -99,19 +99,22 @@ def test_beschreibung_diff_mit_zwei_terrainmodellen():
         "GUPPENFIRN", [tm1, label("swissSURFACE3D", [2025])], DMC, [L003, L004],
         stac_import.DEFAULT_COMMENTARY)
     assert desc == (
-        "Area: GUPPENFIRN, TerrainModel 1: 2026-DSM-photogrammetric, TerrainModel 2: "
+        "Area: GUPPENFIRN, DigitalSurfaceModel 1: 2026-DSM-photogrammetric, DigitalSurfaceModel 2: "
         "2025-swissSURFACE3D-DSM, SourceReferenceSystem: "
         "(EPSG:2056) CH1903+ / LV95_LN02, Unit: metre, CameraSystem: Leica DMC-4, Acquisition time: "
         "2026-08-13T08:22:21.00,2026-08-13T08:27:50.00, LineId: "
         "20260813_0822_41216_003_082221,20260813_0822_41216_004_082750, Commentary: Digital "
-        "Surface Model - Difference (TerrainModel 1 minus TerrainModel 2, negative = loss)")
+        "Surface Model - Difference (DigitalSurfaceModel 1 minus DigitalSurfaceModel 2, "
+        "negative = loss)")
     assert stac_import.area_from_description(desc) == "GUPPENFIRN"
     f = stac_import.description_fields(desc)
     assert f["Unit"] == "metre"
     assert f["SourceReferenceSystem"] == "(EPSG:2056) CH1903+ / LV95_LN02"
-    assert label("swissALTI3D", [""]) == "swissALTI3D"
-    assert label("swissALTI3D", ["2019"]) == "2019-swissALTI3D"
+    assert label("swissSURFACE3D", [""]) == "swissSURFACE3D-DSM"
     assert label("", ["2019"]) == ""
+    # nie ein DTM zur Auswahl (Entscheid Nutzer 2026-10-27)
+    assert stac_import.TERRAIN_MODELS == [stac_import.TERRAIN_MODEL_1_DEFAULT,
+                                          stac_import.TERRAIN_MODEL_S3D]
     with pytest.raises(ValueError):
         stac_import.build_description("", ["x"], DMC, [L003], "c")
 
@@ -162,9 +165,27 @@ def test_beschreibung_terrainmodell_als_stac_link():
     desc = stac_import.build_description("GUPPENFIRN", [tm, "2025-DSM-photogrammetric"], DMC,
                                          [L003], "c")
     f = stac_import.description_fields(desc)
-    assert f["TerrainModel 1"] == tm and f["TerrainModel 2"] == "2025-DSM-photogrammetric"
+    assert f["DigitalSurfaceModel 1"] == tm
+    assert f["DigitalSurfaceModel 2"] == "2025-DSM-photogrammetric"
+    # DIFF-Assets mit den frueheren Schluesseln (vor 2026-10-27) bleiben lesbar
+    old = stac_import.description_fields(
+        desc.replace("DigitalSurfaceModel ", "TerrainModel "))
+    assert old["TerrainModel 1"] == tm and old["Area"] == "GUPPENFIRN"
     with pytest.raises(ValueError):
         stac_import.terrain_model_label("x", [2026], "https://example.com/a/b/c.tif")
+
+
+def test_dtm_sperre_ueber_den_namen():
+    chk = stac_import.check_not_dtm
+    for bad in ("2026_GUPPENFIRN_DTM_50cm_LV95_LN02.tif", r"C:\daten\dtm2019.tif",
+                "swissalti3d_2019_2600-1200_0.5_2056_5728.tif", "2019_swissALTI3D_mosaik.tif",
+                "https://sys-data.int.bgdi.ch/c/i/kry-2026-08-13t08222100-dtm-raster.tif"):
+        with pytest.raises(ValueError, match="DTM"):
+            chk(bad, "DSM alt")
+    # 'dtm' mitten im Wort (STADTMITTE) und ein DTM-Ordner sperren nicht
+    for ok in ("2026_GUPPENFIRN_DSM_50cm_LV95_LN02.tif", "2026_STADTMITTE_DSM_50cm_LV95.tif",
+               r"C:\DTM_Vergleich\2026_GUPPENFIRN_DSM_50cm.tif", DSM_HREF, ""):
+        chk(ok, "DSM alt")
 
 
 def test_beschreibung_ads_zeiten():
@@ -428,7 +449,7 @@ BOUNDS = (2715800.0, 1202800.0, 2716400.0, 1203300.0)
 def _run_import(tmp_path, sess, **kw):
     f = tmp_path / "diff.tif"
     f.write_bytes(b"DIFFDATEN" * 100)
-    desc = "Area: GUPPENFIRN, TerrainModel 1: a, TerrainModel 2: b"
+    desc = "Area: GUPPENFIRN, DigitalSurfaceModel 1: a, DigitalSurfaceModel 2: b"
     kw.setdefault("bounds_lv95", BOUNDS)
     return f, stac_import.run_stac_import(
         f, "INT", ITEM, desc, 0.5, [L003, L004], DMC, kw.pop("area", "GUPPENFIRN"),
@@ -454,6 +475,21 @@ def test_stac_import_bestehendes_item_wird_nie_geschrieben(tmp_path):
     assert state["checksum_sent"] == _stac_http.sha256_multihash(f)
     assert res["checksum"] == state["checksum_sent"]
     assert res["browser_link"] == stac_import.browser_link(ITEM, "INT")
+
+
+def test_stac_import_gsd_diff_und_vergleich_dsm_aktuell(tmp_path, caplog):
+    """Auf 1 m gemitteltes Diff: eo:gsd 1, Vergleich mit dem DSM-RASTER (0.5) ueber source_gsd."""
+    pytest.importorskip("requests")
+    caplog.set_level(logging.WARNING)
+    state = {}
+    sess = FakeSession(_stac_handler(state))
+    f = tmp_path / "diff.tif"
+    f.write_bytes(b"DIFFDATEN" * 100)
+    stac_import.run_stac_import(f, "INT", ITEM, "Area: GUPPENFIRN", 1.0, [L003, L004], DMC,
+                                "GUPPENFIRN", bounds_lv95=BOUNDS, session=sess,
+                                upload_sessions=(sess, sess), auth=("u", "p"), source_gsd=0.5)
+    assert state["payload"]["eo:gsd"] == 1.0
+    assert "GSD weicht ab" not in caplog.text
 
 
 def test_stac_import_legt_fehlendes_item_an(tmp_path, fixed_ring):
@@ -662,6 +698,57 @@ def test_diff_gleiches_gitter_exakt(tmp_path):
     assert list((tmp_path / "staging").iterdir()) == []          # Staging aufgeraeumt
 
 
+def test_diff_auf_1m_gemittelt(tmp_path):
+    """0.5 m -> 1 m: jede Zelle = Mittel ihrer 2 x 2 gueltigen dh, NoData zaehlt nicht,
+    Statistik und Metadaten im Ausgabegitter."""
+    dd = _dd()
+    gdal = _gdal()
+    import numpy as np
+    pn, pa, neu, alt, gt = _pair(tmp_path, seed=3)          # 300 x 200 px a 0.5 m
+    alt[0, 0] = FLT_MAX_NEG                                   # 1 von 4 Pixeln der Zelle (0, 0)
+    alt[2:4, 2:4] = FLT_MAX_NEG                               # ganze Zelle (1, 1) ohne Referenz
+    write_raster(pa, alt, gt)
+    out = tmp_path / "diff.tif"
+    res = _run(dd, pn, pa, out, tmp_path, out_gsd=1.0)
+    dh = neu.astype("float64") - alt.astype("float64")
+    valid = alt != np.float32(FLT_MAX_NEG)
+    s = np.where(valid, dh, 0).reshape(100, 2, 150, 2).sum(axis=(1, 3))
+    n = valid.reshape(100, 2, 150, 2).sum(axis=(1, 3))
+    got = read(out)
+    assert got.shape == (100, 150)
+    assert got[1, 1] == np.float32(FLT_MAX_NEG)
+    ok = n > 0
+    assert np.allclose(got[ok], s[ok] / n[ok], atol=1e-4)
+    assert abs(got[0, 0] - (dh[0, 1] + dh[1, 0] + dh[1, 1]) / 3) < 1e-4
+    assert res["gsd"] == 1.0 and res["gsd_neu"] == 0.5 and res["aggregated"] is True
+    gdal.SetConfigOption("GDAL_PAM_ENABLED", "NO")
+    try:
+        ds = gdal.Open(str(out))
+        assert ds.GetGeoTransform() == (2600000.0, 1.0, 0.0, 1200100.0, 0.0, -1.0)
+        md = ds.GetMetadata()
+        b = ds.GetRasterBand(1)
+        mean = float(b.GetMetadataItem("STATISTICS_MEAN"))
+        b = ds = None
+    finally:
+        gdal.SetConfigOption("GDAL_PAM_ENABLED", None)
+    assert md["DSMDIFF_GSD"] == "1" and md["DSMDIFF_GSD_NEW"] == "0.5"
+    assert md["DSMDIFF_AGGREGATION"].startswith("average 0.5 m -> 1 m")
+    assert abs(mean - float(got[ok].astype("float64").mean())) < 1e-6
+    assert res["stats"]["valid"] == int(ok.sum())
+    # gleiche GSD wie DSM aktuell: kein Mitteln, Gitter von DSM aktuell
+    res = _run(dd, pn, pa, out, tmp_path, out_gsd=0.5, overwrite=True)
+    assert read(out).shape == (200, 300) and res["aggregated"] is False
+
+
+def test_diff_feiner_als_dsm_aktuell_abbruch(tmp_path):
+    dd = _dd()
+    pn, pa, *_ = _pair(tmp_path, res=1.0)
+    out = tmp_path / "diff.tif"
+    with pytest.raises(ValueError, match="feiner als DSM aktuell"):
+        _run(dd, pn, pa, out, tmp_path, out_gsd=0.5)
+    assert not out.exists()
+
+
 def test_diff_nodata_loch_und_nan(tmp_path):
     dd = _dd()
     import numpy as np
@@ -794,6 +881,15 @@ def test_raster_pruefungen(tmp_path):
     p = write_raster(tmp_path / "nocrs.tif", a, (2600000.0, 1.0, 0.0, 1200000.0, 0.0, -1.0), srs=None)
     with pytest.raises(ValueError, match="kein CRS"):
         dd.raster_facts(p, "DSM aktuell")
+
+
+def test_dtm_im_namen_abbruch_vor_dem_schreiben(tmp_path):
+    dd = _dd()
+    pn, pa, *_ = _pair(tmp_path, name_alt="2019_GUPPENFIRN_swissALTI3D_50cm.tif")
+    out = tmp_path / "diff.tif"
+    with pytest.raises(ValueError, match="DSM alt: .*DTM"):
+        _run(dd, pn, pa, out, tmp_path)
+    assert not out.exists() and not (tmp_path / "staging").exists()
 
 
 def test_cog_eigenschaften(tmp_path):
@@ -1266,9 +1362,10 @@ def test_runner_import_scheitert_diff_bleibt(tmp_path, monkeypatch, caplog):
     pn, pa, *_ = _pair(tmp_path, seed=10)
     out = tmp_path / "diff.tif"
     cfg = {"action": "dsm_diff", "dsm_neu": pn, "dsm_alt": pa, "alt_quelle": "datei",
-           "out_path": str(out), "staging_dir": str(tmp_path / "st"),
+           "out_path": str(out), "staging_dir": str(tmp_path / "st"), "out_gsd": 1.0,
            "meta": {"auftragstyp": "kry", "camera": DMC, "line_ids": [L003, L004],
-                    "area": "GUPPENFIRN", "tm2": "swissALTI3D", "tm2_year": "2019"},
+                    "area": "GUPPENFIRN", "tm2": stac_import.TERRAIN_MODEL_1_DEFAULT,
+                    "tm2_year": "2019"},
            "stac": {"enabled": True, "env": "INT", "secrets_dir": str(tmp_path)}}
     monkeypatch.setattr(_stac_http, "load_stac_credentials", lambda d, e: ("u", "p", None))
     sess = FakeSession(_stac_handler({}))
@@ -1298,8 +1395,11 @@ def test_runner_import_scheitert_diff_bleibt(tmp_path, monkeypatch, caplog):
     assert out.exists()
     assert seen["bounds_lv95"] == (2600000.0, 1200000.0, 2600150.0, 1200100.0)
     assert seen["args"][2] == ITEM
-    # Beschreibung: lokale Eingaben ohne Pfad, Jahr TerrainModel 1 aus der ersten LineID
-    assert ("TerrainModel 1: 2026-DSM-photogrammetric, TerrainModel 2: 2019-swissALTI3D, "
+    # eo:gsd = 1 m (gemittelt), verglichen mit dem DSM-RASTER wird DSM aktuell (0.5 m)
+    assert seen["args"][4] == 1.0 and seen["source_gsd"] == 0.5
+    # Beschreibung: lokale Eingaben ohne Pfad, Jahr DigitalSurfaceModel 1 aus der ersten LineID
+    assert ("DigitalSurfaceModel 1: 2026-DSM-photogrammetric, "
+            "DigitalSurfaceModel 2: 2019-DSM-photogrammetric, "
             in seen["args"][3])
     # Ohne Felder gilt die Spezifikation 0.5-1 m je DSM - in Beschreibung und DIFF-Metadaten
     assert "Unit: metre, VerticalAccuracy: 0.71-1.41 (1 sigma; LoD95 1.39-2.77), " in seen["args"][3]
@@ -1313,6 +1413,7 @@ def test_runner_import_scheitert_diff_bleibt(tmp_path, monkeypatch, caplog):
         gdal.SetConfigOption("GDAL_PAM_ENABLED", None)
     assert md["DSMDIFF_SIGMA_NEW"] == "0.5-1" and md["DSMDIFF_SIGMA_OLD"] == "0.5-1"
     assert md["DSMDIFF_VERTICAL_ACCURACY"] == "0.71-1.41 (1 sigma; LoD95 1.39-2.77)"
+    assert md["DSMDIFF_GSD"] == "1" and md["DSMDIFF_GSD_NEW"] == "0.5"
     _no_item_writes(sess404)                 # die Vorpruefung selbst schreibt nichts
 
     # Nur STAC-Import: die Felder gewinnen, Abweichung zu den DIFF-Metadaten -> Warnung
@@ -1323,6 +1424,7 @@ def test_runner_import_scheitert_diff_bleibt(tmp_path, monkeypatch, caplog):
         assert runner._stac_import(imp) == runner.EXIT_OK
     assert "VerticalAccuracy: 0.71 (1 sigma; LoD95 1.39), " in seen["args"][3]
     assert "weicht von den DIFF-Metadaten ab" in caplog.text
+    assert seen["args"][4] == 1.0 and seen["source_gsd"] == 0.5     # aus DSMDIFF_GSD_NEW
     caplog.clear()
     imp["meta"] = dict(cfg["meta"])          # ohne Felder: Werte aus dem DIFF, keine Warnung
     assert runner._stac_import(imp) == runner.EXIT_OK
@@ -1386,7 +1488,14 @@ def test_gui_vorbelegung_vorschau_und_defaults(tmp_path):
         app.neu_var.set(str(neu))
         app._on_neu_changed()
         assert app.jahr_var.get() == "2026" and app.area_var.get() == "GUPPENFIRN"
+        # Standard 1 m (Wunsch Vorgesetzter); der vorgeschlagene Name folgt der GSD
+        assert app.gsd_var.get() == "1 m" and app._out_gsd() == 1.0
+        assert app.out_var.get() == str(tmp_path / "2026_GUPPENFIRN_DSM-DIFF_100cm_LV95.tif")
+        app.gsd_var.set("0.5 m")
         assert app.out_var.get() == str(tmp_path / "2026_GUPPENFIRN_DSM-DIFF_50cm_LV95.tif")
+        app.out_var.set(str(tmp_path / "eigener_name.tif"))     # von Hand: bleibt
+        app.gsd_var.set("1 m")
+        assert app.out_var.get() == str(tmp_path / "eigener_name.tif")
         app.auftragstyp_var.set(next(l for l in g.AUFTRAGSTYP_LABELS if l.startswith("kry ")))
         added, skipped = app.lineid_w.add_ids([L004, L003, "kaputt"])
         assert added == [L004, L003] and len(skipped) == 1
@@ -1396,7 +1505,8 @@ def test_gui_vorbelegung_vorschau_und_defaults(tmp_path):
         assert txt["asset"] == "kry-2026-08-13t08222100-dsm-diff.tif"
         assert txt["title"] == "DSM-DIFF"
         assert txt["link"].startswith("https://sys-data.int.bgdi.ch/")
-        assert "TerrainModel 1: 2026-DSM-photogrammetric, TerrainModel 2: <Jahr nach" in txt["desc"]
+        assert ("DigitalSurfaceModel 1: 2026-DSM-photogrammetric, "
+                "DigitalSurfaceModel 2: <Jahr nach") in txt["desc"]
         assert "-swissSURFACE3D-DSM, " in txt["desc"]
         # Hoehengenauigkeit: Default je Quelle DSM alt, geht in Vorschau und Config
         assert app.sigma_neu_var.get() == "0.5-1" and app.sigma_alt_var.get() == "0.3"
@@ -1423,13 +1533,15 @@ def test_gui_vorbelegung_vorschau_und_defaults(tmp_path):
         cfg = app._build_cfg()
         assert cfg["stac"]["env"] == "PROD" and cfg["alt_quelle"] == g.ALT_S3D
         assert cfg["ref_year"] == 2026 and cfg["meta"]["line_ids"] == [L003, L004]
+        assert cfg["out_gsd"] == 1.0
         assert cfg["mosaic_out"].endswith("2026_GUPPENFIRN_swissSURFACE3D_50cm_LV95_LN02.tif")
         app.alt_mode_var.set(g.ALT_FILE)
         app._on_alt_change()
-        app.tm2_var.set("swissALTI3D")
+        app.tm2_var.set("swissSURFACE3D")
         app.tm2_year_var.set("2019")
         app._refresh_preview()
-        assert "TerrainModel 2: 2019-swissALTI3D, " in app._preview["desc"].cget("text")
+        assert "DigitalSurfaceModel 2: 2019-swissSURFACE3D-DSM, " in \
+            app._preview["desc"].cget("text")
         # STAC-Links: der Asset-Name steht in Klammern, ein lokaler Pfad nie
         app.neu_var.set(DSM_HREF)
         app.alt_var.set(DSM_HREF.replace("2026-08-13t08222100", "2025-08-20t10000000"))
@@ -1437,12 +1549,12 @@ def test_gui_vorbelegung_vorschau_und_defaults(tmp_path):
         app.tm2_year_var.set("2025")
         app._refresh_preview()
         desc = app._preview["desc"].cget("text")
-        assert (f"TerrainModel 1: 2026-DSM-photogrammetric ({ITEM}-dsm-raster.tif), "
-                "TerrainModel 2: 2025-DSM-photogrammetric "
+        assert (f"DigitalSurfaceModel 1: 2026-DSM-photogrammetric ({ITEM}-dsm-raster.tif), "
+                "DigitalSurfaceModel 2: 2025-DSM-photogrammetric "
                 "(kry-2025-08-20t10000000-dsm-raster.tif), ") in desc
         app.tm2_year_var.set("")
         app.stac_var.set(True)
-        assert any("TerrainModel 2: Jahr" in e for e in app._validate())
+        assert any("DigitalSurfaceModel 2: Jahr" in e for e in app._validate())
     finally:
         app.destroy()
 
@@ -1471,9 +1583,14 @@ def test_gui_validierung_nur_formales(tmp_path):
         # 'Nur STAC-Import' nimmt das eigene Feld, nicht die Ausgabe
         app.out_var.set(str(neu))
         errors = app._validate(import_only=True)
-        assert any("Vorhandenes DIFF-COG" in e for e in errors)
+        assert any("DIFF-COG nicht gefunden" in e for e in errors)
         app.import_diff_var.set(str(neu))
-        assert not any("Vorhandenes DIFF-COG" in e for e in app._validate(import_only=True))
+        assert not any("DIFF-COG nicht gefunden" in e for e in app._validate(import_only=True))
+        # DTM im Namen: Start wird verweigert
+        dtm = tmp_path / "2019_GUPPENFIRN_DTM_50cm.tif"
+        dtm.write_bytes(b"x")
+        app.neu_var.set(str(dtm))
+        assert any(e.startswith("DSM aktuell:") and "DTM" in e for e in app._validate())
         # STAC-Link als Eingabe: nur die Form wird geprueft
         app.neu_var.set("https://example.com/x/y/z.tif")
         assert any("unbekannt" in e for e in app._validate())
@@ -1497,9 +1614,19 @@ def test_gui_vorbelegung_aus_stac_und_aus_diff():
         assert app._auftragstyp() == "ram" and app.area_var.get() == "GUPPENFIRN"
         assert app.camera_var.get() == "Leica DMC-4" and app.jahr_var.get() == "2026"
         assert app.lineid_w.get_ids() == [L003, L004]
-        assert app._suggested_out_name() == "2026_GUPPENFIRN_DSM-DIFF_50cm_LV95.tif"
-        app._apply_stac_alt(dict(summary, terrain_model="swissALTI3D", year=2019))
-        assert app.tm2_var.get() == "swissALTI3D" and app.tm2_year_var.get() == "2019"
+        assert app._suggested_out_name() == "2026_GUPPENFIRN_DSM-DIFF_100cm_LV95.tif"
+        # GSD von DSM aktuell aus STAC (0.5 m): 0.5 m und 1 m gehen, feiner als DSM aktuell nicht
+        app.gsd_var.set("0.5 m")
+        assert not any("feiner als DSM aktuell" in e for e in app._validate())
+        app._neu_gsd_m = 1.0
+        assert any("feiner als DSM aktuell" in e for e in app._validate())
+        app.gsd_var.set("1 m")
+        assert not any("feiner als DSM aktuell" in e for e in app._validate())
+        app._apply_stac_alt(dict(summary, terrain_model="swissSURFACE3D", year=2019))
+        assert app.tm2_var.get() == "swissSURFACE3D" and app.tm2_year_var.get() == "2019"
+        # ein DTM steht nicht zur Auswahl und wird nicht uebernommen
+        app._apply_stac_alt(dict(summary, terrain_model="swissALTI3D", year=2018))
+        assert app.tm2_var.get() == "swissSURFACE3D"
 
         app.lineid_w.clear()
         app.area_var.set("")
